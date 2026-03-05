@@ -1,6 +1,8 @@
 // src/controllers/ticketController.js
 import connectDB from "../db/index.js";
 import moment from "moment-timezone";
+import { sendTicketNotification } from "../services/emailService.js";
+import { logger } from "../logger.js";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 
@@ -279,5 +281,224 @@ export const getSTRQueue = async (req, res) => {
     } catch (err) {
         console.error("getSTRQueue:", err);
         return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// ─────────────────────────────────────────────────────────
+// BULK TOOLS
+// ─────────────────────────────────────────────────────────
+
+/**
+ * POST /api/tickets/import
+ * Body: { rows: [{ customer, project, category, priority, description, source, assigned_to, notes }] }
+ * Superadmin / GM / Manager only.
+ */
+export const importTickets = async (req, res) => {
+    try {
+        const pool = connectDB();
+        const { rows } = req.body;
+        if (!Array.isArray(rows) || rows.length === 0)
+            return res.status(400).json({ success: false, message: "No rows provided." });
+
+        // Priority normaliser
+        const normPriority = (v = "") => {
+            const u = String(v).trim().toUpperCase();
+            if (["P1", "P2", "P3", "P4", "P5"].includes(u)) return u;
+            if (u === "CRITICAL") return "P1";
+            if (u === "HIGH") return "P2";
+            if (["MEDIUM", "NORMAL"].includes(u)) return "P3";
+            if (u === "LOW") return "P4";
+            if (["MINIMAL", "VERY LOW"].includes(u)) return "P5";
+            return "P3"; // default
+        };
+
+        // Pre-load customers, users, and today's ticket count for fast lookup/numbering
+        const [allCustomers] = await pool.query("SELECT id, name, customer_code FROM customers");
+        const [allUsers] = await pool.query("SELECT id, name, email FROM users WHERE role='agent'");
+        const [countRow] = await pool.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at)=CURDATE()`);
+        let nextSeq = (countRow[0]?.cnt || 0) + 1;
+
+        const findCustomer = (v) => {
+            if (!v) return null;
+            const s = v.toLowerCase().trim();
+            return allCustomers.find(c => c.name.toLowerCase() === s || (c.customer_code || "").toLowerCase() === s) || null;
+        };
+        const findUser = (v) => {
+            if (!v) return null;
+            const s = v.toLowerCase().trim();
+            return allUsers.find(u => u.name.toLowerCase() === s || u.email.toLowerCase() === s) || null;
+        };
+
+        const created = [], failed = [];
+
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const rowNum = i + 1;
+
+            try {
+                const customer = findCustomer(row.customer);
+                if (!customer) { failed.push({ row: rowNum, reason: `Customer not found: "${row.customer}"` }); continue; }
+
+                // Load project for that customer
+                const [projects] = await pool.query(
+                    "SELECT id, name FROM projects WHERE customer_id=?", [customer.id]
+                );
+                const project = projects.find(p => p.name.toLowerCase() === (row.project || "").toLowerCase().trim());
+                if (!project) { failed.push({ row: rowNum, reason: `Project not found: "${row.project}" under ${customer.name}` }); continue; }
+
+                if (!row.category?.trim()) { failed.push({ row: rowNum, reason: "category is required" }); continue; }
+                if (!row.description?.trim()) { failed.push({ row: rowNum, reason: "description is required" }); continue; }
+
+                const priority = normPriority(row.priority);
+                // Source ENUM: ('email','call','manual','csv')
+                const source = "csv"; // Always set to csv for bulk imports
+
+                const assigned_to = findUser(row.assigned_to)?.id || req.user.userId;
+                const etr = buildETR();
+
+                // ── Duplicate Detection ──────────────────────────────────
+                // Check if a ticket with same description for same customer/project exists (last 24h)
+                const [dupes] = await pool.query(
+                    `SELECT id FROM tickets 
+                     WHERE customer_id=? AND project_id=? AND description=? 
+                     AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) 
+                     LIMIT 1`,
+                    [customer.id, project.id, row.description.trim()]
+                );
+                if (dupes.length > 0) {
+                    failed.push({ row: rowNum, reason: `Potential duplicate ticket found (ID: ${dupes[0].id})` });
+                    continue;
+                }
+
+                // Generate ticket number: TKT-YYYYMMDD-XXXX
+                const seqStr = String(nextSeq++).padStart(4, "0");
+                const ticketNumber = `TKT-${moment().tz(TZ).format("YYYYMMDD")}-${seqStr}`;
+
+                const [result] = await pool.query(`
+                    INSERT INTO tickets
+                      (ticket_number, customer_id, project_id, category, priority, description, source, assigned_to, etr, status, escalation_level, created_by)
+                    VALUES (?,?,?,?,?,?,?,?,?, 'open', 1, ?)`,
+                    [ticketNumber, customer.id, project.id, row.category.trim(), priority, row.description.trim(), source, assigned_to, etr, req.user.userId]
+                );
+
+                const ticketId = result.insertId;
+
+                // Notes → first activity
+                if (row.notes?.trim()) {
+                    await pool.query(
+                        "INSERT INTO ticket_activities (ticket_id, performed_by, action, note) VALUES (?,?,?,?)",
+                        [ticketId, req.user.userId, "note_added", row.notes.trim()]
+                    );
+                }
+
+                // ── Dynamic Notifications ────────────────────────────────
+                // Sanitize email/phone (remove brackets, etc.)
+                const cleanEmail = row.email?.replace(/[\[\]]/g, "").trim();
+                const cleanPhone = row.phone?.replace(/[\[\]]/g, "").trim();
+
+                // If CSV row has email, notify via email
+                if (cleanEmail) {
+                    // We need to pass a mock/temp ticket object to the service
+                    const tempTicket = { ticket_number: ticketNumber, category: row.category, priority, description: row.description, etr };
+                    sendTicketNotification(tempTicket, cleanEmail).catch(e => logger.error(`Import Email Notify Fail: ${e.message}`));
+                }
+
+                // If CSV row has phone, trigger SMS (Simulated)
+                if (cleanPhone) {
+                    logger.info(`📱 SMS NOTIFICATION SIMULATED for ${cleanPhone}: Ticket ${ticketNumber} created.`);
+                    // In a real scenario, you'd call an SMS gateway service here
+                }
+
+                created.push({ row: rowNum, ticket_number: ticketNumber, customer: customer.name });
+            } catch (rowErr) {
+                failed.push({ row: rowNum, reason: rowErr.message });
+            }
+        }
+
+        return res.json({
+            success: true,
+            summary: { total: rows.length, created: created.length, failed: failed.length },
+            created,
+            failed,
+        });
+    } catch (err) {
+        console.error("importTickets:", err);
+        return res.status(500).json({ success: false, message: "Import error: " + err.message });
+    }
+};
+
+/**
+ * GET /api/tickets/export
+ * Streams a role-scoped CSV file.
+ */
+export const exportTickets = async (req, res) => {
+    try {
+        const pool = connectDB();
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+        const { status, priority, customer_id } = req.query;
+
+        let filters = [`(${roleWhere})`];
+        const params = [...roleParams];
+        if (status) { filters.push("t.status=?"); params.push(status); }
+        if (priority) { filters.push("t.priority=?"); params.push(priority); }
+        if (customer_id) { filters.push("t.customer_id=?"); params.push(customer_id); }
+
+        const [rows] = await pool.query(`
+            SELECT t.ticket_number, t.status, t.priority, t.category, t.source,
+                   t.escalation_level, t.description, t.etr, t.created_at, t.updated_at,
+                   c.name as customer, p.name as project,
+                   u.name as assigned_to
+            FROM tickets t
+            LEFT JOIN customers c  ON t.customer_id  = c.id
+            LEFT JOIN projects  p  ON t.project_id   = p.id
+            LEFT JOIN users     u  ON t.assigned_to  = u.id
+            WHERE ${filters.join(" AND ")}
+            ORDER BY t.created_at DESC`, params);
+
+        const headers = ["ticket_number", "customer", "project", "category", "priority", "status", "source", "escalation_level", "assigned_to", "description", "etr", "created_at"];
+        const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+        let csv = headers.join(",") + "\n";
+        for (const r of rows) {
+            csv += headers.map(h => escape(r[h])).join(",") + "\n";
+        }
+
+        const filename = `tickets_export_${new Date().toISOString().slice(0, 10)}.csv`;
+        res.setHeader("Content-Type", "text/csv");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        return res.send(csv);
+    } catch (err) {
+        console.error("exportTickets:", err);
+        return res.status(500).json({ success: false, message: "Export error: " + err.message });
+    }
+};
+
+/**
+ * PUT /api/tickets/bulk
+ * Body: { ids: [1,2,3], status?, assigned_to? }
+ */
+export const bulkUpdateTickets = async (req, res) => {
+    try {
+        const pool = connectDB();
+        const { ids, status, assigned_to } = req.body;
+        if (!Array.isArray(ids) || ids.length === 0)
+            return res.status(400).json({ success: false, message: "No ticket IDs provided." });
+
+        const updates = [], vals = [];
+        const VALID_STATUSES = ["open", "in_progress", "pending", "resolved", "closed"];
+        if (status && VALID_STATUSES.includes(status)) { updates.push("status=?"); vals.push(status); }
+        if (assigned_to) { updates.push("assigned_to=?"); vals.push(assigned_to); }
+        if (!updates.length)
+            return res.status(400).json({ success: false, message: "Nothing to update." });
+
+        updates.push("updated_at=NOW()");
+        const placeholders = ids.map(() => "?").join(",");
+        vals.push(...ids);
+        await pool.query(`UPDATE tickets SET ${updates.join(",")} WHERE id IN (${placeholders})`, vals);
+
+        return res.json({ success: true, message: `${ids.length} ticket(s) updated.`, updated: ids.length });
+    } catch (err) {
+        console.error("bulkUpdateTickets:", err);
+        return res.status(500).json({ success: false, message: "Bulk update error: " + err.message });
     }
 };

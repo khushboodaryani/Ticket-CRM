@@ -1,0 +1,3 @@
+ClientName,WorkPackage,IssueCategory,Urgency,IssueDetail,StaffNote,Email
+Bharti Airtel Ltd,Enterprise Lease Line,Technical Issue,Critical,API is returning 401 errors for all requests. Needs immediate look.,Client reported via WhatsApp.,[khushboo@multycomm.com]
+Tata Communications,Global SD-WAN,Feature Request,Low,Need a way to bulk export logs from the dashboard.,Discussed in last meeting.,[daryanikhush@gmail.com]

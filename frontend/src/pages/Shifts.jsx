@@ -43,7 +43,14 @@ export default function Shifts() {
             <div className="page-body">
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
                     {loading ? <div className="loader-center"><div className="spinner spinner-lg" /></div>
-                        : shifts.length === 0 ? <div className="empty-state"><div className="empty-state-icon">🕐</div><div>No shifts configured</div></div>
+                        : shifts.length === 0 ? (
+                            <div className="empty-state">
+                                <div className="empty-state-icon">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+                                </div>
+                                <div>No shifts configured</div>
+                            </div>
+                        )
                             : shifts.map(s => (
                                 <div key={s.id} className="card" style={{ borderTop: '2px solid var(--accent)' }}>
                                     <div className="card-header">
@@ -54,7 +61,9 @@ export default function Shifts() {
                                         <span className="badge badge-in_progress">{s.member_count} members</span>
                                     </div>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                                        <span style={{ fontSize: 22 }}>⏰</span>
+                                        <span style={{ color: 'var(--accent)', display: 'flex' }}>
+                                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+                                        </span>
                                         <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{s.start_time?.slice(0, 5)} – {s.end_time?.slice(0, 5)}</span>
                                     </div>
                                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
@@ -77,7 +86,9 @@ export default function Shifts() {
                     <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
                         <div className="modal-header">
                             <div className="modal-title">Create Shift</div>
-                            <button className="modal-close" onClick={() => setShowModal(false)}>✕</button>
+                            <button className="modal-close" onClick={() => setShowModal(false)}>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                            </button>
                         </div>
                         <form onSubmit={handleSave}>
                             <div className="form-grid" style={{ marginBottom: 16 }}>

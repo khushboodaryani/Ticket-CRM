@@ -11,6 +11,7 @@ import Dashboard from './pages/Dashboard'
 import Tickets from './pages/Tickets'
 import TicketDetail from './pages/TicketDetail'
 import TicketForm from './pages/TicketForm'
+import BulkImport from './pages/BulkImport'
 import STRQueue from './pages/STRQueue'
 import Users from './pages/Users'
 import Customers from './pages/Customers'
@@ -45,6 +46,9 @@ export default function App() {
                             <Route path="/dashboard" element={<Dashboard />} />
                             <Route path="/tickets" element={<Tickets />} />
                             <Route path="/tickets/new" element={<TicketForm />} />
+                            <Route path="/tickets/import" element={
+                                <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><BulkImport /></ProtectedRoute>
+                            } />
                             <Route path="/tickets/queue" element={
                                 <ProtectedRoute roles={['superadmin', 'gm', 'manager', 'tl']}><STRQueue /></ProtectedRoute>
                             } />

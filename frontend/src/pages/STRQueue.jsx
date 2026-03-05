@@ -29,7 +29,11 @@ export default function STRQueue() {
     return (
         <>
             <Topbar title="STR Queue" subtitle={`${queue.length} active tickets in queue`}
-                actions={<button className="btn btn-secondary btn-sm" onClick={() => window.location.reload()}>↻ Refresh</button>} />
+                actions={
+                    <button className="btn btn-secondary btn-sm" onClick={() => window.location.reload()} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M3 21v-5h5" /></svg> Refresh
+                    </button>
+                } />
             <div className="page-body">
                 {/* Summary cards */}
                 <div className="stats-grid mb-4">
@@ -58,7 +62,12 @@ export default function STRQueue() {
                                 {loading ? (
                                     <tr><td colSpan={9} style={{ textAlign: 'center', padding: 40 }}><div className="spinner" style={{ margin: 'auto' }} /></td></tr>
                                 ) : queue.length === 0 ? (
-                                    <tr><td colSpan={9} className="empty-row">🎉 Queue is empty! All tickets are resolved.</td></tr>
+                                    <tr><td colSpan={9} className="empty-row">
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '20px 0' }}>
+                                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--success)' }}><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                                            Queue is empty! All tickets are resolved.
+                                        </div>
+                                    </td></tr>
                                 ) : queue.map(t => {
                                     const overdue = t.etr && new Date(t.etr) < now
                                     return (
@@ -74,7 +83,8 @@ export default function STRQueue() {
                                             <td><span className={`role-badge role-${t.assigned_role}`}>{t.assigned_role}</span></td>
                                             <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.str ? new Date(t.str).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
                                             <td style={{ fontSize: 12, color: overdue ? 'var(--danger)' : 'var(--text-secondary)' }}>
-                                                {overdue && '⚠ '}{t.etr ? new Date(t.etr).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+                                                {overdue && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 4 }}><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>}
+                                                {t.etr ? new Date(t.etr).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
                                             </td>
                                             <td><span className={`badge badge-${t.status}`}>{t.status?.replace('_', ' ')}</span></td>
                                         </tr>

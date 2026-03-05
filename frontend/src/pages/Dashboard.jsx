@@ -156,17 +156,20 @@ export default function Dashboard() {
                 {sourceData.length > 0 && (
                     <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
                         {[
-                            { key: 'email', label: '✉ Email', color: SOURCE_COLORS.email },
-                            { key: 'phone', label: '📞 Phone', color: SOURCE_COLORS.phone },
-                            { key: 'manual', label: '✍ Manual', color: SOURCE_COLORS.manual },
-                            { key: 'csv', label: '📋 CSV', color: SOURCE_COLORS.csv },
+                            { key: 'email', label: 'Email Channel', color: SOURCE_COLORS.email, icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg> },
+                            { key: 'phone', label: 'Phone Call', color: SOURCE_COLORS.phone, icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg> },
+                            { key: 'manual', label: 'Manual Entry', color: SOURCE_COLORS.manual, icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg> },
+                            { key: 'csv', label: 'CSV Upload', color: SOURCE_COLORS.csv, icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg> },
                         ].map(src => {
                             const found = (data.charts.source || []).find(s => s.source === src.key)
                             return (
                                 <div key={src.key} style={{ flex: 1, minWidth: 130, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
                                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: src.color, flexShrink: 0 }} />
                                     <div>
-                                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{src.label}</div>
+                                        <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                            <span style={{ display: 'flex' }}>{src.icon}</span>
+                                            {src.label}
+                                        </div>
                                         <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--text-primary)' }}>{found?.count || 0}</div>
                                     </div>
                                 </div>

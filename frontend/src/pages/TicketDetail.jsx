@@ -77,11 +77,17 @@ export default function TicketDetail() {
                 subtitle={`${ticket.customer_name} › ${ticket.project_name}`}
                 actions={
                     <div className="btn-row">
-                        {isOverdue && <span className="badge" style={{ background: 'var(--danger-bg)', color: 'var(--danger)' }}>⚠ Overdue</span>}
+                        {isOverdue && <span className="badge" style={{ background: 'var(--danger-bg)', color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg> Overdue
+                        </span>}
                         {canEscalate && ticket.escalation_level < 4 && (
-                            <button className="btn btn-danger btn-sm" onClick={() => setShowEscModal(true)}>🔺 Escalate</button>
+                            <button className="btn btn-danger btn-sm" onClick={() => setShowEscModal(true)} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15" /></svg> Escalate
+                            </button>
                         )}
-                        <button className="btn btn-secondary btn-sm" onClick={() => navigate('/tickets')}>← Back</button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => navigate('/tickets')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></svg> Back
+                        </button>
                     </div>
                 }
             />
@@ -103,7 +109,9 @@ export default function TicketDetail() {
                                 {ticket.description}
                             </div>
                             {ticket.attachment_url && (
-                                <a href={ticket.attachment_url} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">📎 View Attachment</a>
+                                <a href={ticket.attachment_url} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg> View Attachment
+                                </a>
                             )}
                         </div>
 
@@ -118,7 +126,12 @@ export default function TicketDetail() {
                                 <div><div className="info-key">Assigned To</div><div className="info-val">{ticket.assigned_to_name || '—'}</div></div>
                                 <div><div className="info-key">STR</div><div className="info-val">{ticket.str ? new Date(ticket.str).toLocaleString('en-IN') : '—'}</div></div>
                                 <div><div className="info-key">ETR</div><div className="info-val" style={{ color: isOverdue ? 'var(--danger)' : undefined }}>{ticket.etr ? new Date(ticket.etr).toLocaleString('en-IN') : '—'}</div></div>
-                                <div><div className="info-key">SLA Paused</div><div className="info-val">{ticket.sla_paused ? '⏸ Paused' : '▶ Running'}</div></div>
+                                <div><div className="info-key">SLA Paused</div><div className="info-val" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    {ticket.sla_paused
+                                        ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg> Paused</>
+                                        : <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg> Running</>
+                                    }
+                                </div></div>
                                 <div><div className="info-key">Created At</div><div className="info-val">{new Date(ticket.created_at).toLocaleString('en-IN')}</div></div>
                                 <div><div className="info-key">Last Updated</div><div className="info-val">{new Date(ticket.updated_at).toLocaleString('en-IN')}</div></div>
                             </div>
@@ -143,8 +156,11 @@ export default function TicketDetail() {
                                 </div>
                             </div>
                             <div className="btn-row" style={{ marginTop: 16 }}>
-                                <button className="btn btn-primary" onClick={handleUpdate} disabled={updating}>
-                                    {updating ? <><span className="spinner" style={{ width: 14, height: 14 }} />Saving…</> : '💾 Save Changes'}
+                                <button className="btn btn-primary" onClick={handleUpdate} disabled={updating} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    {updating
+                                        ? <><span className="spinner" style={{ width: 14, height: 14 }} />Saving…</>
+                                        : <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg> Save Changes</>
+                                    }
                                 </button>
                             </div>
                         </div>
@@ -219,8 +235,12 @@ export default function TicketDetail() {
                 <div className="modal-overlay" onClick={() => setShowEscModal(false)}>
                     <div className="modal modal-sm" onClick={e => e.stopPropagation()}>
                         <div className="modal-header">
-                            <div className="modal-title">🔺 Manual Escalation</div>
-                            <button className="modal-close" onClick={() => setShowEscModal(false)}>✕</button>
+                            <div className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--danger)' }}><polyline points="18 15 12 9 6 15" /></svg> Manual Escalation
+                            </div>
+                            <button className="modal-close" onClick={() => setShowEscModal(false)}>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                            </button>
                         </div>
                         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
                             Escalate ticket <strong>{ticket.ticket_number}</strong> from Level {ticket.escalation_level} → Level {ticket.escalation_level + 1}.

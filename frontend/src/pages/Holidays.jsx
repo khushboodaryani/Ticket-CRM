@@ -72,8 +72,9 @@ export default function Holidays() {
                         </table>
                     </div>
                     {holidays.length > 0 && (
-                        <div style={{ marginTop: 16, padding: '12px 16px', background: 'var(--info-bg)', borderRadius: 8, fontSize: 13, color: 'var(--info)', border: '1px solid rgba(6,182,212,0.2)' }}>
-                            ℹ️ The SLA engine automatically pauses all ticket timers on holidays. {holidays.filter(h => h.holiday_date >= today).length} upcoming holidays will trigger pauses.
+                        <div style={{ marginTop: 16, padding: '12px 16px', background: 'var(--info-bg)', borderRadius: 8, fontSize: 13, color: 'var(--info)', border: '1px solid rgba(6,182,212,0.2)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                            <span>The SLA engine automatically pauses all ticket timers on holidays. {holidays.filter(h => h.holiday_date >= today).length} upcoming holidays will trigger pauses.</span>
                         </div>
                     )}
                 </div>
@@ -84,7 +85,9 @@ export default function Holidays() {
                     <div className="modal modal-sm" onClick={e => e.stopPropagation()}>
                         <div className="modal-header">
                             <div className="modal-title">Add Holiday</div>
-                            <button className="modal-close" onClick={() => setShowModal(false)}>✕</button>
+                            <button className="modal-close" onClick={() => setShowModal(false)}>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                            </button>
                         </div>
                         <form onSubmit={handleSave}>
                             <div className="form-group" style={{ marginBottom: 16 }}>
