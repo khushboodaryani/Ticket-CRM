@@ -4,120 +4,120 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
-    const { login, loading } = useAuth()
-    const navigate = useNavigate()
-    const [form, setForm] = useState({ email: '', password: '' })
-    const [error, setError] = useState('')
-    const [showPwd, setShowPwd] = useState(false)
+  const { login, loading } = useAuth()
+  const navigate = useNavigate()
+  const [form, setForm] = useState({ email: '', password: '' })
+  const [error, setError] = useState('')
+  const [showPwd, setShowPwd] = useState(false)
 
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-        setError('')
-        try {
-            await login(form.email, form.password)
-            navigate('/dashboard')
-        } catch (err) {
-            setError(err.response?.data?.message || 'Invalid email or password.')
-        }
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError('')
+    try {
+      await login(form.email, form.password)
+      navigate('/dashboard')
+    } catch (err) {
+      setError(err.response?.data?.message || 'Invalid email or password.')
     }
+  }
 
-    return (
-        <div className="lp-root">
-            {/* ── Full-screen background ── */}
-            <div className="lp-bg">
-                <img src="/telecom_bg.png" alt="" className="lp-bg-img" />
-                <div className="lp-bg-overlay" />
+  return (
+    <div className="lp-root">
+      {/* ── Full-screen background ── */}
+      <div className="lp-bg">
+        <img src="/telecom_bg.png" alt="" className="lp-bg-img" />
+        <div className="lp-bg-overlay" />
+      </div>
+
+      {/* ── Centered card ── */}
+      <div className="lp-card">
+        {/* Logo */}
+        <div className="lp-logo-wrap">
+          <img src="/multycomm_logo.png" alt="MultyComm" className="lp-logo-img" />
+        </div>
+
+        <div className="lp-divider" />
+
+        <div className="lp-heading">
+          <h1 className="lp-title">Welcome back</h1>
+          <p className="lp-subtitle">Sign in to the Support CRM Platform</p>
+        </div>
+
+        {error && (
+          <div className="lp-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            {error}
+          </div>
+        )}
+
+        <form className="lp-form" onSubmit={handleSubmit}>
+          <div className="lp-field">
+            <label className="lp-label">Email Address</label>
+            <div className="lp-input-wrap">
+              <svg className="lp-input-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+              </svg>
+              <input
+                className="lp-input"
+                type="email"
+                placeholder="admin@ticketcrm.com"
+                value={form.email}
+                onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
+                required
+              />
             </div>
+          </div>
 
-            {/* ── Centered card ── */}
-            <div className="lp-card">
-                {/* Logo */}
-                <div className="lp-logo-wrap">
-                    <img src="/multycomm_logo.png" alt="MultyComm" className="lp-logo-img" />
-                </div>
-
-                <div className="lp-divider" />
-
-                <div className="lp-heading">
-                    <h1 className="lp-title">Welcome back</h1>
-                    <p className="lp-subtitle">Sign in to the Support CRM Platform</p>
-                </div>
-
-                {error && (
-                    <div className="lp-error">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
-                        </svg>
-                        {error}
-                    </div>
+          <div className="lp-field">
+            <label className="lp-label">Password</label>
+            <div className="lp-input-wrap">
+              <svg className="lp-input-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+              <input
+                className="lp-input"
+                type={showPwd ? 'text' : 'password'}
+                placeholder="••••••••"
+                value={form.password}
+                onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
+                required
+              />
+              <button type="button" className="lp-pwd-toggle" onClick={() => setShowPwd(p => !p)} tabIndex={-1}>
+                {showPwd ? (
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
+                ) : (
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
                 )}
+              </button>
+            </div>
+          </div>
 
-                <form className="lp-form" onSubmit={handleSubmit}>
-                    <div className="lp-field">
-                        <label className="lp-label">Email Address</label>
-                        <div className="lp-input-wrap">
-                            <svg className="lp-input-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <rect x="2" y="4" width="20" height="16" rx="2" /><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-                            </svg>
-                            <input
-                                className="lp-input"
-                                type="email"
-                                placeholder="admin@ticketcrm.com"
-                                value={form.email}
-                                onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
-                                required
-                            />
-                        </div>
-                    </div>
+          <button className="lp-btn" type="submit" disabled={loading}>
+            {loading ? (
+              <>
+                <span className="lp-spinner" />
+                Signing in…
+              </>
+            ) : (
+              <>
+                Sign In
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="lp-btn-arrow">
+                  <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
+                </svg>
+              </>
+            )}
+          </button>
+        </form>
 
-                    <div className="lp-field">
-                        <label className="lp-label">Password</label>
-                        <div className="lp-input-wrap">
-                            <svg className="lp-input-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                            </svg>
-                            <input
-                                className="lp-input"
-                                type={showPwd ? 'text' : 'password'}
-                                placeholder="••••••••"
-                                value={form.password}
-                                onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
-                                required
-                            />
-                            <button type="button" className="lp-pwd-toggle" onClick={() => setShowPwd(p => !p)} tabIndex={-1}>
-                                {showPwd ? (
-                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>
-                                ) : (
-                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-                                )}
-                            </button>
-                        </div>
-                    </div>
-
-                    <button className="lp-btn" type="submit" disabled={loading}>
-                        {loading ? (
-                            <>
-                                <span className="lp-spinner" />
-                                Signing in…
-                            </>
-                        ) : (
-                            <>
-                                Sign In
-                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="lp-btn-arrow">
-                                    <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
-                                </svg>
-                            </>
-                        )}
-                    </button>
-                </form>
-
-                {/* <div className="lp-creds">
+        {/* <div className="lp-creds">
                     <div className="lp-creds-label">Default credentials</div>
                     <div className="lp-creds-row"><code>admin@ticketcrm.com</code><span>/</span><code>Admin@1234</code></div>
                 </div> */}
-            </div>
+      </div>
 
-            <style>{`
+      <style>{`
         .lp-root {
           min-height: 100vh;
           display: flex;
@@ -176,12 +176,9 @@ export default function Login() {
           margin-bottom: 20px;
         }
         .lp-logo-img {
-          height: 72px;
+          height: 80px;
           object-fit: contain;
-          border-radius: 12px;
-          background: rgba(255,255,255,0.9);
-          padding: 8px 14px;
-          box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+          filter: drop-shadow(0 4px 16px rgba(0,0,0,0.5)) brightness(1.05);
         }
         .lp-divider {
           height: 1px;
@@ -300,6 +297,6 @@ export default function Login() {
           border: 1px solid rgba(255,255,255,0.07);
         }
       `}</style>
-        </div>
-    )
+    </div>
+  )
 }

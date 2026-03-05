@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
+import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 
 const ROLES = ['superadmin', 'gm', 'manager', 'tl', 'agent']
@@ -9,6 +10,8 @@ const ROLES = ['superadmin', 'gm', 'manager', 'tl', 'agent']
 function RoleBadge({ r }) { return <span className={`role-badge role-${r}`}>{r}</span> }
 
 export default function Users() {
+    const { user: currentUser } = useAuth()
+    const isSuperAdmin = currentUser?.role === 'superadmin'
     const [users, setUsers] = useState([])
     const [loading, setLoading] = useState(true)
     const [showModal, setShowModal] = useState(false)
@@ -50,7 +53,7 @@ export default function Users() {
     return (
         <>
             <Topbar title="Users" subtitle={`${users.length} total users`}
-                actions={<button className="btn btn-primary btn-sm" onClick={openCreate}>+ Add User</button>} />
+                actions={isSuperAdmin && <button className="btn btn-primary btn-sm" onClick={openCreate}>+ Add User</button>} />
             <div className="page-body">
                 <div className="card">
                     <div className="filters-bar">
@@ -114,9 +117,16 @@ export default function Users() {
                                 </div>
                                 <div className="form-group">
                                     <label className="form-label">Role <span>*</span></label>
-                                    <select className="input" value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}>
-                                        {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                                    </select>
+                                    {isSuperAdmin ? (
+                                        <select className="input" value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}>
+                                            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                                        </select>
+                                    ) : (
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                                            <RoleBadge r={form.role} />
+                                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Only superadmin can change roles</span>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                             <div className="form-group" style={{ marginBottom: 20 }}>

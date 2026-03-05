@@ -50,28 +50,32 @@ export const getUserById = async (req, res) => {
     }
 };
 
-// POST /api/users
+// POST /api/users  (superadmin only)
 export const createUser = async (req, res) => {
+    // Only superadmin can create users
+    if (req.user.role !== 'superadmin')
+        return res.status(403).json({ success: false, message: 'Only superadmin can create users.' });
+
     const { name, email, password, role, reporting_to } = req.body;
     if (!name || !email || !password || !role)
-        return res.status(400).json({ success: false, message: "name, email, password, role are required." });
+        return res.status(400).json({ success: false, message: 'name, email, password, role are required.' });
     if (!VALID_ROLES.includes(role))
-        return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${VALID_ROLES.join(", ")}` });
+        return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
 
     try {
         const pool = connectDB();
         const [existing] = await pool.query(`SELECT id FROM users WHERE email = ?`, [email]);
-        if (existing.length) return res.status(409).json({ success: false, message: "Email already in use." });
+        if (existing.length) return res.status(409).json({ success: false, message: 'Email already in use.' });
 
         const hash = await bcrypt.hash(password, 12);
         const [result] = await pool.query(
             `INSERT INTO users (name, email, password_hash, role, reporting_to, is_active) VALUES (?,?,?,?,?,1)`,
             [name, email, hash, role, reporting_to || null]
         );
-        return res.status(201).json({ success: true, message: "User created.", userId: result.insertId });
+        return res.status(201).json({ success: true, message: 'User created.', userId: result.insertId });
     } catch (err) {
-        console.error("createUser:", err);
-        return res.status(500).json({ success: false, message: "Server error." });
+        console.error('createUser:', err);
+        return res.status(500).json({ success: false, message: 'Server error.' });
     }
 };
 
@@ -81,25 +85,32 @@ export const updateUser = async (req, res) => {
     try {
         const pool = connectDB();
         const [existing] = await pool.query(`SELECT id FROM users WHERE id = ?`, [req.params.id]);
-        if (!existing.length) return res.status(404).json({ success: false, message: "User not found." });
+        if (!existing.length) return res.status(404).json({ success: false, message: 'User not found.' });
 
         const updates = [];
         const vals = [];
-        if (name) { updates.push("name=?"); vals.push(name); }
-        if (email) { updates.push("email=?"); vals.push(email); }
-        if (role && VALID_ROLES.includes(role)) { updates.push("role=?"); vals.push(role); }
-        if (reporting_to !== undefined) { updates.push("reporting_to=?"); vals.push(reporting_to || null); }
-        if (is_active !== undefined) { updates.push("is_active=?"); vals.push(is_active ? 1 : 0); }
-        if (password) { updates.push("password_hash=?"); vals.push(await bcrypt.hash(password, 12)); }
+        if (name) { updates.push('name=?'); vals.push(name); }
+        if (email) { updates.push('email=?'); vals.push(email); }
 
-        if (!updates.length) return res.status(400).json({ success: false, message: "Nothing to update." });
+        // Only superadmin can change a user's role
+        if (role && VALID_ROLES.includes(role)) {
+            if (req.user.role !== 'superadmin')
+                return res.status(403).json({ success: false, message: 'Only superadmin can change user roles.' });
+            updates.push('role=?'); vals.push(role);
+        }
+
+        if (reporting_to !== undefined) { updates.push('reporting_to=?'); vals.push(reporting_to || null); }
+        if (is_active !== undefined) { updates.push('is_active=?'); vals.push(is_active ? 1 : 0); }
+        if (password) { updates.push('password_hash=?'); vals.push(await bcrypt.hash(password, 12)); }
+
+        if (!updates.length) return res.status(400).json({ success: false, message: 'Nothing to update.' });
 
         vals.push(req.params.id);
-        await pool.query(`UPDATE users SET ${updates.join(",")} WHERE id=?`, vals);
-        return res.json({ success: true, message: "User updated." });
+        await pool.query(`UPDATE users SET ${updates.join(',')} WHERE id=?`, vals);
+        return res.json({ success: true, message: 'User updated.' });
     } catch (err) {
-        console.error("updateUser:", err);
-        return res.status(500).json({ success: false, message: "Server error." });
+        console.error('updateUser:', err);
+        return res.status(500).json({ success: false, message: 'Server error.' });
     }
 };
 
