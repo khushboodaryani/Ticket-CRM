@@ -1,7 +1,7 @@
-// src/routes/projectRoutes.js
+// modules/projects/projectRoutes.js
 import { Router } from "express";
-import { authenticateToken, requireRole } from "../middlewares/auth.js";
-import { getProjects, getProjectById, createProject, updateProject, deleteProject } from "../controllers/projectController.js";
+import { authenticateToken, requireRole } from "../../middlewares/auth.js";
+import { getProjects, getProjectById, createProject, updateProject, deleteProject } from "./projectController.js";
 
 const router = Router();
 router.use(authenticateToken);

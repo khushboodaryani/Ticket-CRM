@@ -1,17 +1,13 @@
-// src/controllers/ticketController.js
-import connectDB from "../db/index.js";
+// modules/tickets/ticketController.js
+import connectDB from "../../db/index.js";
 import moment from "moment-timezone";
-import { sendTicketNotification } from "../services/emailService.js";
-import { logger } from "../logger.js";
+import { sendTicketNotification } from "../notifications/emailService.js";
+import { createNotification } from "../notifications/notificationController.js";
+import { logger } from "../../logger.js";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
-
-/**
- * Build ETR: current time + 2 hours (shift-aware ETR is adjusted by SLA engine)
- */
 const buildETR = () => moment().tz(TZ).add(2, "hours").format("YYYY-MM-DD HH:mm:ss");
 
-// Role-based WHERE clauses
 const buildRoleFilter = (user) => {
     const { userId, role } = user;
     switch (role) {
@@ -28,7 +24,7 @@ const buildRoleFilter = (user) => {
 export const getTickets = async (req, res) => {
     try {
         const pool = connectDB();
-        const { status, priority, escalation_level, customer_id, project_id, page = 1, limit = 20 } = req.query;
+        const { status, priority, escalation_level, customer_id, project_id, queue_id, page = 1, limit = 20 } = req.query;
         const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
 
         let filters = [`(${roleWhere})`];
@@ -39,6 +35,7 @@ export const getTickets = async (req, res) => {
         if (escalation_level) { filters.push("t.escalation_level=?"); params.push(Number(escalation_level)); }
         if (customer_id) { filters.push("t.customer_id=?"); params.push(customer_id); }
         if (project_id) { filters.push("t.project_id=?"); params.push(project_id); }
+        if (queue_id) { filters.push("t.queue_id=?"); params.push(queue_id); }
 
         const whereClause = filters.join(" AND ");
         const offset = (Number(page) - 1) * Number(limit);
@@ -46,12 +43,14 @@ export const getTickets = async (req, res) => {
         const [rows] = await pool.query(
             `SELECT t.*,
               c.name as customer_name, p.name as project_name,
-              u.name as assigned_to_name, cb.name as created_by_name
+              u.name as assigned_to_name, cb.name as created_by_name,
+              q.name as queue_name
        FROM tickets t
        LEFT JOIN customers c ON t.customer_id = c.id
        LEFT JOIN projects p ON t.project_id = p.id
        LEFT JOIN users u ON t.assigned_to = u.id
        LEFT JOIN users cb ON t.created_by = cb.id
+       LEFT JOIN queues q ON t.queue_id = q.id
        WHERE ${whereClause}
        ORDER BY t.created_at DESC
        LIMIT ? OFFSET ?`,
@@ -81,18 +80,19 @@ export const getTicketById = async (req, res) => {
         const [rows] = await pool.query(
             `SELECT t.*,
               c.name as customer_name, p.name as project_name,
-              u.name as assigned_to_name, cb.name as created_by_name
+              u.name as assigned_to_name, cb.name as created_by_name,
+              q.name as queue_name
        FROM tickets t
        LEFT JOIN customers c ON t.customer_id = c.id
        LEFT JOIN projects p ON t.project_id = p.id
        LEFT JOIN users u ON t.assigned_to = u.id
        LEFT JOIN users cb ON t.created_by = cb.id
+       LEFT JOIN queues q ON t.queue_id = q.id
        WHERE t.id = ?`,
             [req.params.id]
         );
         if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
-        // Fetch escalation logs
         const [logs] = await pool.query(
             `SELECT el.*, fu.name as from_name, tu.name as to_name
        FROM escalation_logs el
@@ -102,7 +102,6 @@ export const getTicketById = async (req, res) => {
             [req.params.id]
         );
 
-        // Fetch activity
         const [activity] = await pool.query(
             `SELECT ta.*, u.name as performed_by_name FROM ticket_activities ta
        LEFT JOIN users u ON ta.performed_by = u.id
@@ -110,7 +109,16 @@ export const getTicketById = async (req, res) => {
             [req.params.id]
         );
 
-        return res.json({ success: true, ticket: rows[0], escalation_logs: logs, activity });
+        const [tasks] = await pool.query(
+            `SELECT tt.*, u.name as assigned_to_name, cb.name as created_by_name
+             FROM ticket_tasks tt
+             LEFT JOIN users u ON tt.assigned_to = u.id
+             LEFT JOIN users cb ON tt.created_by = cb.id
+             WHERE tt.ticket_id=? ORDER BY tt.created_at ASC`,
+            [req.params.id]
+        );
+
+        return res.json({ success: true, ticket: rows[0], escalation_logs: logs, activity, tasks });
     } catch (err) {
         console.error("getTicketById:", err);
         return res.status(500).json({ success: false, message: "Server error." });
@@ -119,7 +127,7 @@ export const getTicketById = async (req, res) => {
 
 // POST /api/tickets
 export const createTicket = async (req, res) => {
-    const { customer_id, project_id, category, priority, description, source, assigned_to } = req.body;
+    const { customer_id, project_id, category, priority, description, source, assigned_to, queue_id } = req.body;
     if (!customer_id || !project_id || !category || !priority || !description)
         return res.status(400).json({ success: false, message: "customer_id, project_id, category, priority, description are required." });
 
@@ -133,47 +141,75 @@ export const createTicket = async (req, res) => {
         const etr = buildETR();
         const attachment_url = req.file ? `/attachments/${req.file.filename}` : null;
 
-        // Generate ticket number: TKT-YYYYMMDD-XXXX
         const [countRow] = await pool.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at)=CURDATE()`);
         const seq = String(countRow[0].cnt + 1).padStart(4, "0");
         const ticket_number = `TKT-${moment().tz(TZ).format("YYYYMMDD")}-${seq}`;
 
-        // Find default agent to assign (if not provided, assign to caller if agent)
         let finalAssignee = assigned_to || null;
+
+        // Auto-assign from queue if no assignee given (round-robin: least loaded agent)
+        if (!finalAssignee && queue_id) {
+            const [queueAgents] = await pool.query(
+                `SELECT qa.user_id, COUNT(t.id) as load_count
+                 FROM queue_agents qa
+                 LEFT JOIN tickets t ON t.assigned_to = qa.user_id AND t.status IN ('open','in_progress')
+                 WHERE qa.queue_id=? AND qa.role='agent'
+                 GROUP BY qa.user_id
+                 ORDER BY load_count ASC LIMIT 1`,
+                [queue_id]
+            );
+            if (queueAgents.length) finalAssignee = queueAgents[0].user_id;
+        }
+
         if (!finalAssignee && req.user.role === "agent") finalAssignee = req.user.userId;
 
         const [result] = await pool.query(
             `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description,
-       attachment_url, status, escalation_level, str, etr, created_by, assigned_to, source)
-       VALUES (?,?,?,?,?,?,?,'open',1,?,?,?,?,?)`,
+       attachment_url, status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, queue_id)
+       VALUES (?,?,?,?,?,?,?,'open',1,'active',?,?,?,?,?,?)`,
             [ticket_number, customer_id, project_id, category, priority, description,
-                attachment_url, now, etr, req.user.userId, finalAssignee, source || "manual"]
+                attachment_url, now, etr, req.user.userId, finalAssignee, source || "manual", queue_id || null]
         );
 
-        // Fetch customer email for notification
-        const [custRows] = await pool.query(`SELECT email FROM customers WHERE id = ?`, [customer_id]);
-        const customerEmail = custRows[0]?.email;
+        const ticketId = result.insertId;
 
-        // Log activity
+        // Log creation activity
         await pool.query(
             `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'created',?,?)`,
-            [result.insertId, req.user.userId, `Ticket created via ${source || "manual"}`]
+            [ticketId, req.user.userId, `Ticket created via ${source || "manual"}`]
         );
 
-        // Send Notification Email (async)
-        if (customerEmail) {
-            import("../services/emailService.js").then(module => {
-                module.sendTicketNotification({
-                    ticket_number,
-                    category,
-                    priority,
-                    description,
-                    etr
-                }, customerEmail);
+        // Auto-create conversation envelope
+        const [ticketRows] = await pool.query(
+            `SELECT c.email as customer_email FROM tickets t LEFT JOIN customers c ON t.customer_id=c.id WHERE t.id=?`,
+            [ticketId]
+        );
+        const customerEmail = ticketRows[0]?.customer_email;
+
+        await pool.query(
+            `INSERT INTO conversations (ticket_id, source_channel, participant_identity) VALUES (?,?,?)`,
+            [ticketId, source || 'manual', customerEmail || null]
+        );
+
+        // Notify assigned agent
+        if (finalAssignee) {
+            await createNotification(pool, {
+                user_id: finalAssignee,
+                type: 'ticket_assigned',
+                title: `New Ticket Assigned: ${ticket_number}`,
+                body: `Ticket ${ticket_number} (${priority} - ${category}) has been assigned to you.`,
+                entity_id: ticketId
             });
         }
 
-        return res.status(201).json({ success: true, message: "Ticket created.", ticketId: result.insertId, ticket_number });
+        // Send email notification
+        if (customerEmail) {
+            import("../notifications/emailService.js").then(module => {
+                module.sendTicketNotification({ ticket_number, category, priority, description, etr }, customerEmail);
+            });
+        }
+
+        return res.status(201).json({ success: true, message: "Ticket created.", ticketId, ticket_number });
     } catch (err) {
         console.error("createTicket:", err);
         return res.status(500).json({ success: false, message: "Server error." });
@@ -197,9 +233,9 @@ export const updateTicket = async (req, res) => {
         if (assigned_to) { updates.push("assigned_to=?"); vals.push(assigned_to); }
         if (req.file) { updates.push("attachment_url=?"); vals.push(`/attachments/${req.file.filename}`); }
 
-        // Auto-close resolved tickets
-        if (status === "resolved") {
+        if (status === "resolved" || status === "closed") {
             updates.push("resolved_at=NOW()");
+            updates.push("sla_state='completed'");
         }
 
         if (!updates.length) return res.status(400).json({ success: false, message: "Nothing to update." });
@@ -207,11 +243,21 @@ export const updateTicket = async (req, res) => {
         vals.push(req.params.id);
         await pool.query(`UPDATE tickets SET ${updates.join(",")} WHERE id=?`, vals);
 
-        // Log activity
         await pool.query(
             `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'updated',?,?)`,
             [req.params.id, req.user.userId, `Status changed to ${status || existing[0].status}`]
         );
+
+        // Notify assigned agent if it changed
+        if (assigned_to && assigned_to !== existing[0].assigned_to) {
+            await createNotification(pool, {
+                user_id: assigned_to,
+                type: 'ticket_assigned',
+                title: `Ticket Assigned to You: ${existing[0].ticket_number}`,
+                body: `Ticket ${existing[0].ticket_number} has been assigned to you by ${req.user.name}.`,
+                entity_id: req.params.id
+            });
+        }
 
         return res.json({ success: true, message: "Ticket updated." });
     } catch (err) {
@@ -220,7 +266,146 @@ export const updateTicket = async (req, res) => {
     }
 };
 
-// POST /api/tickets/:id/escalate  (manual override)
+// PUT /api/tickets/:id/queue  — Assign ticket to a queue
+export const assignQueue = async (req, res) => {
+    const { queue_id } = req.body;
+    try {
+        const pool = connectDB();
+        const [ticketRows] = await pool.query(`SELECT * FROM tickets WHERE id=?`, [req.params.id]);
+        if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+
+        await pool.query(`UPDATE tickets SET queue_id=? WHERE id=?`, [queue_id || null, req.params.id]);
+
+        await pool.query(
+            `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
+            [req.params.id, 'queue_assigned', req.user.userId,
+             queue_id ? `Assigned to queue ID: ${queue_id}` : 'Removed from queue']
+        );
+
+        return res.json({ success: true, message: "Queue assignment updated." });
+    } catch (err) {
+        console.error("assignQueue:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// PUT /api/tickets/:id/priority  — Change priority with activity log
+export const changePriority = async (req, res) => {
+    const { priority, reason } = req.body;
+    const validPriorities = ["P1", "P2", "P3", "P4", "P5"];
+    if (!priority || !validPriorities.includes(priority))
+        return res.status(400).json({ success: false, message: "Valid priority (P1-P5) is required." });
+
+    try {
+        const pool = connectDB();
+        const [rows] = await pool.query(`SELECT ticket_number, priority FROM tickets WHERE id=?`, [req.params.id]);
+        if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+
+        const oldPriority = rows[0].priority;
+        await pool.query(`UPDATE tickets SET priority=? WHERE id=?`, [priority, req.params.id]);
+
+        await pool.query(
+            `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
+            [req.params.id, 'priority_changed', req.user.userId,
+             `Priority changed from ${oldPriority} to ${priority}${reason ? ': ' + reason : ''}`]
+        );
+
+        return res.json({ success: true, message: `Priority updated to ${priority}.` });
+    } catch (err) {
+        console.error("changePriority:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// POST /api/tickets/:id/tasks  — Create sub-task
+export const addTask = async (req, res) => {
+    const { title, assigned_to, due_date } = req.body;
+    if (!title?.trim()) return res.status(400).json({ success: false, message: "Task title is required." });
+    try {
+        const pool = connectDB();
+        const [ticketRows] = await pool.query(`SELECT id, ticket_number FROM tickets WHERE id=?`, [req.params.id]);
+        if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+
+        const [result] = await pool.query(
+            `INSERT INTO ticket_tasks (ticket_id, title, assigned_to, due_date, created_by) VALUES (?,?,?,?,?)`,
+            [req.params.id, title.trim(), assigned_to || null, due_date || null, req.user.userId]
+        );
+
+        await pool.query(
+            `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
+            [req.params.id, 'task_added', req.user.userId, `Task created: "${title.trim()}"`]
+        );
+
+        if (assigned_to) {
+            await createNotification(pool, {
+                user_id: assigned_to,
+                type: 'ticket_updated',
+                title: `New Task on Ticket: ${ticketRows[0].ticket_number}`,
+                body: `You have been assigned a new task: "${title.trim()}"`,
+                entity_id: req.params.id
+            });
+        }
+
+        return res.status(201).json({ success: true, message: "Task added.", taskId: result.insertId });
+    } catch (err) {
+        console.error("addTask:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// GET /api/tickets/:id/tasks
+export const getTasks = async (req, res) => {
+    try {
+        const pool = connectDB();
+        const [rows] = await pool.query(
+            `SELECT tt.*, u.name as assigned_to_name, cb.name as created_by_name
+             FROM ticket_tasks tt
+             LEFT JOIN users u ON tt.assigned_to = u.id
+             LEFT JOIN users cb ON tt.created_by = cb.id
+             WHERE tt.ticket_id=? ORDER BY tt.created_at ASC`,
+            [req.params.id]
+        );
+        return res.json({ success: true, tasks: rows });
+    } catch (err) {
+        console.error("getTasks:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// PUT /api/tickets/:id/tasks/:taskId  — Toggle done or update task
+export const updateTask = async (req, res) => {
+    const { is_done, title, assigned_to, due_date } = req.body;
+    try {
+        const pool = connectDB();
+        const [rows] = await pool.query(`SELECT * FROM ticket_tasks WHERE id=? AND ticket_id=?`, [req.params.taskId, req.params.id]);
+        if (!rows.length) return res.status(404).json({ success: false, message: "Task not found." });
+
+        const updates = [], vals = [];
+        if (title !== undefined) { updates.push("title=?"); vals.push(title); }
+        if (assigned_to !== undefined) { updates.push("assigned_to=?"); vals.push(assigned_to || null); }
+        if (due_date !== undefined) { updates.push("due_date=?"); vals.push(due_date || null); }
+        if (is_done !== undefined) { updates.push("is_done=?"); vals.push(is_done ? 1 : 0); }
+        if (!updates.length) return res.status(400).json({ success: false, message: "Nothing to update." });
+
+        vals.push(req.params.taskId);
+        await pool.query(`UPDATE ticket_tasks SET ${updates.join(",")} WHERE id=?`, vals);
+
+        if (is_done !== undefined) {
+            await pool.query(
+                `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
+                [req.params.id, 'task_updated', req.user.userId,
+                 `Task "${rows[0].title}" marked as ${is_done ? 'done' : 'pending'}`]
+            );
+        }
+
+        return res.json({ success: true, message: "Task updated." });
+    } catch (err) {
+        console.error("updateTask:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// POST /api/tickets/:id/escalate
 export const escalateTicket = async (req, res) => {
     const { reason } = req.body;
     try {
@@ -231,7 +416,6 @@ export const escalateTicket = async (req, res) => {
         const ticket = rows[0];
         const newLevel = Math.min(ticket.escalation_level + 1, 4);
 
-        // Find next assignee based on level
         let newAssignee = ticket.assigned_to;
         const [nextUser] = await pool.query(
             `SELECT id FROM users WHERE reporting_to = ? AND is_active=1 LIMIT 1`,
@@ -255,6 +439,16 @@ export const escalateTicket = async (req, res) => {
             [req.params.id, req.user.userId, `Manually escalated to Level ${newLevel}`]
         );
 
+        if (newAssignee && newAssignee !== ticket.assigned_to) {
+            await createNotification(pool, {
+                user_id: newAssignee,
+                type: 'ticket_assigned',
+                title: `Escalated Ticket Assigned: ${ticket.ticket_number}`,
+                body: `Ticket ${ticket.ticket_number} has been escalated to Level ${newLevel} and assigned to you.`,
+                entity_id: req.params.id
+            });
+        }
+
         return res.json({ success: true, message: `Ticket escalated to Level ${newLevel}.`, escalation_level: newLevel });
     } catch (err) {
         console.error("escalateTicket:", err);
@@ -262,18 +456,20 @@ export const escalateTicket = async (req, res) => {
     }
 };
 
-// GET /api/tickets/queue/str  – STR queue view
+// GET /api/tickets/queue/str
 export const getSTRQueue = async (req, res) => {
     try {
         const pool = connectDB();
         const [rows] = await pool.query(
-            `SELECT t.id, t.ticket_number, t.priority, t.status, t.escalation_level, t.str, t.etr,
+            `SELECT t.id, t.ticket_number, t.priority, t.status, t.escalation_level, t.sla_state, t.str, t.etr,
               u.name as assigned_to_name, u.role as assigned_role,
-              c.name as customer_name, p.name as project_name
+              c.name as customer_name, p.name as project_name,
+              q.name as queue_name
        FROM tickets t
        LEFT JOIN users u ON t.assigned_to = u.id
        LEFT JOIN customers c ON t.customer_id = c.id
        LEFT JOIN projects p ON t.project_id = p.id
+       LEFT JOIN queues q ON t.queue_id = q.id
        WHERE t.status IN ('open','in_progress')
        ORDER BY t.priority ASC, t.str ASC`
         );
@@ -284,15 +480,7 @@ export const getSTRQueue = async (req, res) => {
     }
 };
 
-// ─────────────────────────────────────────────────────────
-// BULK TOOLS
-// ─────────────────────────────────────────────────────────
-
-/**
- * POST /api/tickets/import
- * Body: { rows: [{ customer, project, category, priority, description, source, assigned_to, notes }] }
- * Superadmin / GM / Manager only.
- */
+// POST /api/tickets/import
 export const importTickets = async (req, res) => {
     try {
         const pool = connectDB();
@@ -300,7 +488,6 @@ export const importTickets = async (req, res) => {
         if (!Array.isArray(rows) || rows.length === 0)
             return res.status(400).json({ success: false, message: "No rows provided." });
 
-        // Priority normaliser
         const normPriority = (v = "") => {
             const u = String(v).trim().toUpperCase();
             if (["P1", "P2", "P3", "P4", "P5"].includes(u)) return u;
@@ -309,10 +496,9 @@ export const importTickets = async (req, res) => {
             if (["MEDIUM", "NORMAL"].includes(u)) return "P3";
             if (u === "LOW") return "P4";
             if (["MINIMAL", "VERY LOW"].includes(u)) return "P5";
-            return "P3"; // default
+            return "P3";
         };
 
-        // Pre-load customers, users, and today's ticket count for fast lookup/numbering
         const [allCustomers] = await pool.query("SELECT id, name, customer_code FROM customers");
         const [allUsers] = await pool.query("SELECT id, name, email FROM users WHERE role='agent'");
         const [countRow] = await pool.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at)=CURDATE()`);
@@ -334,15 +520,11 @@ export const importTickets = async (req, res) => {
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
             const rowNum = i + 1;
-
             try {
                 const customer = findCustomer(row.customer);
                 if (!customer) { failed.push({ row: rowNum, reason: `Customer not found: "${row.customer}"` }); continue; }
 
-                // Load project for that customer
-                const [projects] = await pool.query(
-                    "SELECT id, name FROM projects WHERE customer_id=?", [customer.id]
-                );
+                const [projects] = await pool.query("SELECT id, name FROM projects WHERE customer_id=?", [customer.id]);
                 const project = projects.find(p => p.name.toLowerCase() === (row.project || "").toLowerCase().trim());
                 if (!project) { failed.push({ row: rowNum, reason: `Project not found: "${row.project}" under ${customer.name}` }); continue; }
 
@@ -350,40 +532,32 @@ export const importTickets = async (req, res) => {
                 if (!row.description?.trim()) { failed.push({ row: rowNum, reason: "description is required" }); continue; }
 
                 const priority = normPriority(row.priority);
-                // Source ENUM: ('email','call','manual','csv')
-                const source = "csv"; // Always set to csv for bulk imports
-
                 const assigned_to = findUser(row.assigned_to)?.id || req.user.userId;
                 const etr = buildETR();
 
-                // ── Duplicate Detection ──────────────────────────────────
-                // Check if a ticket with same description for same customer/project exists (last 24h)
                 const [dupes] = await pool.query(
-                    `SELECT id FROM tickets 
-                     WHERE customer_id=? AND project_id=? AND description=? 
-                     AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) 
-                     LIMIT 1`,
+                    `SELECT id FROM tickets WHERE customer_id=? AND project_id=? AND description=? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) LIMIT 1`,
                     [customer.id, project.id, row.description.trim()]
                 );
-                if (dupes.length > 0) {
-                    failed.push({ row: rowNum, reason: `Potential duplicate ticket found (ID: ${dupes[0].id})` });
-                    continue;
-                }
+                if (dupes.length > 0) { failed.push({ row: rowNum, reason: `Potential duplicate ticket found (ID: ${dupes[0].id})` }); continue; }
 
-                // Generate ticket number: TKT-YYYYMMDD-XXXX
                 const seqStr = String(nextSeq++).padStart(4, "0");
                 const ticketNumber = `TKT-${moment().tz(TZ).format("YYYYMMDD")}-${seqStr}`;
 
                 const [result] = await pool.query(`
-                    INSERT INTO tickets
-                      (ticket_number, customer_id, project_id, category, priority, description, source, assigned_to, etr, status, escalation_level, created_by)
-                    VALUES (?,?,?,?,?,?,?,?,?, 'open', 1, ?)`,
-                    [ticketNumber, customer.id, project.id, row.category.trim(), priority, row.description.trim(), source, assigned_to, etr, req.user.userId]
+                    INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description, source, assigned_to, etr, status, escalation_level, sla_state, created_by)
+                    VALUES (?,?,?,?,?,?,'csv',?,?, 'open', 1, 'active', ?)`,
+                    [ticketNumber, customer.id, project.id, row.category.trim(), priority, row.description.trim(), assigned_to, etr, req.user.userId]
                 );
 
                 const ticketId = result.insertId;
 
-                // Notes → first activity
+                // Auto-create conversation
+                await pool.query(
+                    `INSERT INTO conversations (ticket_id, source_channel) VALUES (?,'email')`,
+                    [ticketId]
+                );
+
                 if (row.notes?.trim()) {
                     await pool.query(
                         "INSERT INTO ticket_activities (ticket_id, performed_by, action, note) VALUES (?,?,?,?)",
@@ -391,22 +565,16 @@ export const importTickets = async (req, res) => {
                     );
                 }
 
-                // ── Dynamic Notifications ────────────────────────────────
-                // Sanitize email/phone (remove brackets, etc.)
                 const cleanEmail = row.email?.replace(/[\[\]]/g, "").trim();
                 const cleanPhone = row.phone?.replace(/[\[\]]/g, "").trim();
 
-                // If CSV row has email, notify via email
                 if (cleanEmail) {
-                    // We need to pass a mock/temp ticket object to the service
                     const tempTicket = { ticket_number: ticketNumber, category: row.category, priority, description: row.description, etr };
                     sendTicketNotification(tempTicket, cleanEmail).catch(e => logger.error(`Import Email Notify Fail: ${e.message}`));
                 }
 
-                // If CSV row has phone, trigger SMS (Simulated)
                 if (cleanPhone) {
                     logger.info(`📱 SMS NOTIFICATION SIMULATED for ${cleanPhone}: Ticket ${ticketNumber} created.`);
-                    // In a real scenario, you'd call an SMS gateway service here
                 }
 
                 created.push({ row: rowNum, ticket_number: ticketNumber, customer: customer.name });
@@ -427,10 +595,7 @@ export const importTickets = async (req, res) => {
     }
 };
 
-/**
- * GET /api/tickets/export
- * Streams a role-scoped CSV file.
- */
+// GET /api/tickets/export
 export const exportTickets = async (req, res) => {
     try {
         const pool = connectDB();
@@ -444,24 +609,22 @@ export const exportTickets = async (req, res) => {
         if (customer_id) { filters.push("t.customer_id=?"); params.push(customer_id); }
 
         const [rows] = await pool.query(`
-            SELECT t.ticket_number, t.status, t.priority, t.category, t.source,
+            SELECT t.ticket_number, t.status, t.priority, t.category, t.source, t.sla_state,
                    t.escalation_level, t.description, t.etr, t.created_at, t.updated_at,
                    c.name as customer, p.name as project,
-                   u.name as assigned_to
+                   u.name as assigned_to, q.name as queue_name
             FROM tickets t
             LEFT JOIN customers c  ON t.customer_id  = c.id
             LEFT JOIN projects  p  ON t.project_id   = p.id
             LEFT JOIN users     u  ON t.assigned_to  = u.id
+            LEFT JOIN queues    q  ON t.queue_id     = q.id
             WHERE ${filters.join(" AND ")}
             ORDER BY t.created_at DESC`, params);
 
-        const headers = ["ticket_number", "customer", "project", "category", "priority", "status", "source", "escalation_level", "assigned_to", "description", "etr", "created_at"];
+        const headers = ["ticket_number", "customer", "project", "queue_name", "category", "priority", "status", "sla_state", "source", "escalation_level", "assigned_to", "description", "etr", "created_at"];
         const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-
         let csv = headers.join(",") + "\n";
-        for (const r of rows) {
-            csv += headers.map(h => escape(r[h])).join(",") + "\n";
-        }
+        for (const r of rows) csv += headers.map(h => escape(r[h])).join(",") + "\n";
 
         const filename = `tickets_export_${new Date().toISOString().slice(0, 10)}.csv`;
         res.setHeader("Content-Type", "text/csv");
@@ -473,10 +636,7 @@ export const exportTickets = async (req, res) => {
     }
 };
 
-/**
- * PUT /api/tickets/bulk
- * Body: { ids: [1,2,3], status?, assigned_to? }
- */
+// PUT /api/tickets/bulk
 export const bulkUpdateTickets = async (req, res) => {
     try {
         const pool = connectDB();
@@ -488,8 +648,7 @@ export const bulkUpdateTickets = async (req, res) => {
         const VALID_STATUSES = ["open", "in_progress", "pending", "resolved", "closed"];
         if (status && VALID_STATUSES.includes(status)) { updates.push("status=?"); vals.push(status); }
         if (assigned_to) { updates.push("assigned_to=?"); vals.push(assigned_to); }
-        if (!updates.length)
-            return res.status(400).json({ success: false, message: "Nothing to update." });
+        if (!updates.length) return res.status(400).json({ success: false, message: "Nothing to update." });
 
         updates.push("updated_at=NOW()");
         const placeholders = ids.map(() => "?").join(",");

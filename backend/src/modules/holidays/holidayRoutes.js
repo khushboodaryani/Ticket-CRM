@@ -1,7 +1,7 @@
-// src/routes/holidayRoutes.js
+// modules/holidays/holidayRoutes.js
 import { Router } from "express";
-import { authenticateToken, requireRole } from "../middlewares/auth.js";
-import { getHolidays, createHoliday, bulkCreateHolidays, deleteHoliday } from "../controllers/holidayController.js";
+import { authenticateToken, requireRole } from "../../middlewares/auth.js";
+import { getHolidays, createHoliday, bulkCreateHolidays, deleteHoliday } from "./holidayController.js";
 
 const router = Router();
 router.use(authenticateToken);

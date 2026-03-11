@@ -1,8 +1,40 @@
 // src/components/Layout/Topbar.jsx
+import { useState, useEffect, useRef } from 'react'
 import { useTheme } from '../../context/ThemeContext'
+import { useNavigate } from 'react-router-dom'
+import axios from '../../api/axios'
 
 export default function Topbar({ title, subtitle, actions }) {
     const { theme, toggleTheme } = useTheme()
+    const navigate = useNavigate()
+    const [notifications, setNotifications] = useState([])
+    const [unread, setUnread] = useState(0)
+    const [showBell, setShowBell] = useState(false)
+    const bellRef = useRef(null)
+
+    const fetchNotifications = async () => {
+        try {
+            const r = await axios.get('/notifications')
+            setNotifications(r.data.notifications?.slice(0, 5) || [])
+            setUnread(r.data.unread_count || 0)
+        } catch { }
+    }
+
+    useEffect(() => {
+        fetchNotifications()
+        const interval = setInterval(fetchNotifications, 30000)
+        return () => clearInterval(interval)
+    }, [])
+
+    useEffect(() => {
+        const handleClick = (e) => { if (bellRef.current && !bellRef.current.contains(e.target)) setShowBell(false) }
+        document.addEventListener('mousedown', handleClick)
+        return () => document.removeEventListener('mousedown', handleClick)
+    }, [])
+
+    const markAllRead = async () => {
+        try { await axios.put('/notifications/read-all'); fetchNotifications() } catch { }
+    }
 
     return (
         <div className="topbar">
@@ -13,6 +45,59 @@ export default function Topbar({ title, subtitle, actions }) {
 
             <div className="topbar-actions">
                 {actions}
+                {/* Notification Bell */}
+                <div ref={bellRef} style={{ position: 'relative' }}>
+                    <button
+                        className="theme-toggle"
+                        onClick={() => setShowBell(p => !p)}
+                        title="Notifications"
+                        style={{ position: 'relative' }}
+                    >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                            <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                        </svg>
+                        {unread > 0 && (
+                            <span style={{
+                                position: 'absolute', top: -4, right: -4,
+                                background: '#ef4444', color: '#fff',
+                                fontSize: 10, fontWeight: 700,
+                                borderRadius: '50%', width: 16, height: 16,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                lineHeight: 1
+                            }}>{unread > 9 ? '9+' : unread}</span>
+                        )}
+                    </button>
+                    {showBell && (
+                        <div style={{
+                            position: 'absolute', top: 44, right: 0,
+                            width: 320, background: 'var(--bg-card)',
+                            border: '1px solid var(--border)', borderRadius: 12,
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.2)', zIndex: 1000,
+                            overflow: 'hidden'
+                        }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+                                <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>Notifications</span>
+                                {unread > 0 && <button onClick={markAllRead} style={{ fontSize: 11, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Mark all read</button>}
+                            </div>
+                            {notifications.length === 0 ? (
+                                <div style={{ padding: '20px 14px', textAlign: 'center', fontSize: 12, color: 'var(--text-tertiary)' }}>No notifications</div>
+                            ) : (
+                                notifications.map(n => (
+                                    <div key={n.id} onClick={() => { if (n.entity_id) navigate(`/tickets/${n.entity_id}`); setShowBell(false) }} style={{
+                                        padding: '10px 14px', cursor: n.entity_id ? 'pointer' : 'default',
+                                        background: n.is_read ? 'transparent' : 'var(--accent-subtle)',
+                                        borderBottom: '1px solid var(--border)',
+                                        transition: 'background 0.15s'
+                                    }}>
+                                        <div style={{ fontWeight: 500, fontSize: 12, color: 'var(--text-primary)' }}>{n.title}</div>
+                                        {n.body && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>{n.body}</div>}
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    )}
+                </div>
                 <button className="theme-toggle" onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
                     {theme === 'dark' ? (
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

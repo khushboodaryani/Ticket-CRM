@@ -1,7 +1,7 @@
-// src/routes/authRoutes.js
+// modules/auth/authRoutes.js
 import { Router } from "express";
-import { login, getMe } from "../controllers/authController.js";
-import { authenticateToken } from "../middlewares/auth.js";
+import { login, getMe } from "./authController.js";
+import { authenticateToken } from "../../middlewares/auth.js";
 
 const router = Router();
 

@@ -1,7 +1,6 @@
-// src/controllers/dashboardController.js
-import connectDB from "../db/index.js";
+// modules/dashboard/dashboardController.js
+import connectDB from "../../db/index.js";
 
-// Role labels for API response context
 const ROLE_SCOPE = {
     superadmin: "All system tickets",
     gm: "Tickets at escalation level 3+",
@@ -16,7 +15,6 @@ export const getDashboard = async (req, res) => {
         const pool = connectDB();
         const { role, userId } = req.user;
 
-        // Role-based ticket scope
         let roleFilter = "1=1";
         const rp = [];
         if (role === "agent") {
@@ -30,15 +28,9 @@ export const getDashboard = async (req, res) => {
         } else if (role === "gm") {
             roleFilter = "t.escalation_level >= 3";
         }
-        // superadmin: 1=1 (all tickets)
 
-        // Helper to safely parse numbers
-        const n = (val) => {
-            const v = parseInt(val);
-            return isNaN(v) ? 0 : v;
-        };
+        const n = (val) => { const v = parseInt(val); return isNaN(v) ? 0 : v; };
 
-        // 1. Overall summary counts
         const [overall] = await pool.query(
             `SELECT
                 COUNT(*) as total,
@@ -52,32 +44,22 @@ export const getDashboard = async (req, res) => {
             rp
         );
 
-        // 2. Priority breakdown
         const [priority] = await pool.query(
-            `SELECT priority, COUNT(*) as count FROM tickets t WHERE ${roleFilter} GROUP BY priority ORDER BY priority`,
-            rp
+            `SELECT priority, COUNT(*) as count FROM tickets t WHERE ${roleFilter} GROUP BY priority ORDER BY priority`, rp
         );
 
-        // 3. Escalation level breakdown
         const [escalations] = await pool.query(
-            `SELECT escalation_level, COUNT(*) as count FROM tickets t WHERE ${roleFilter} GROUP BY escalation_level ORDER BY escalation_level`,
-            rp
+            `SELECT escalation_level, COUNT(*) as count FROM tickets t WHERE ${roleFilter} GROUP BY escalation_level ORDER BY escalation_level`, rp
         );
 
-        // 4. Status breakdown
         const [statusBreakdown] = await pool.query(
-            `SELECT status, COUNT(*) as count FROM tickets t WHERE ${roleFilter} GROUP BY status`,
-            rp
+            `SELECT status, COUNT(*) as count FROM tickets t WHERE ${roleFilter} GROUP BY status`, rp
         );
 
-        // 5. Source breakdown (email, phone, manual, csv)
         const [sourceBreakdown] = await pool.query(
-            `SELECT COALESCE(source, 'manual') as source, COUNT(*) as count 
-             FROM tickets t WHERE ${roleFilter} GROUP BY source`,
-            rp
+            `SELECT COALESCE(source, 'manual') as source, COUNT(*) as count FROM tickets t WHERE ${roleFilter} GROUP BY source`, rp
         );
 
-        // 6. Customer-wise open tickets (role-scoped)
         const [customerWise] = await pool.query(
             `SELECT c.id, c.name as customer_name, c.customer_code,
                 COUNT(t.id) as total_tickets,
@@ -90,7 +72,6 @@ export const getDashboard = async (req, res) => {
             rp
         );
 
-        // 7. Recent escalation logs
         const [recentEscalations] = await pool.query(
             `SELECT el.id, el.escalation_level as new_level, el.escalated_at,
                 t.ticket_number, p.name as project_name,

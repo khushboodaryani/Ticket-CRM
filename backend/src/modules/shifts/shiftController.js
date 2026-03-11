@@ -1,5 +1,5 @@
-// src/controllers/shiftController.js
-import connectDB from "../db/index.js";
+// modules/shifts/shiftController.js
+import connectDB from "../../db/index.js";
 
 // GET /api/shifts
 export const getShifts = async (req, res) => {
@@ -55,7 +55,6 @@ export const createShift = async (req, res) => {
         );
         const shiftId = result.insertId;
 
-        // Add members
         if (members && members.length) {
             const memberVals = members.map((m) => [shiftId, m.user_id, m.role || "agent"]);
             await pool.query(`INSERT INTO shift_members (shift_id, user_id, role) VALUES ?`, [memberVals]);
@@ -91,9 +90,9 @@ export const updateShift = async (req, res) => {
     }
 };
 
-// POST /api/shifts/:id/members  – add/remove members
+// POST /api/shifts/:id/members
 export const updateShiftMembers = async (req, res) => {
-    const { members } = req.body; // [{user_id, role}]
+    const { members } = req.body;
     try {
         const pool = connectDB();
         await pool.query(`DELETE FROM shift_members WHERE shift_id=?`, [req.params.id]);

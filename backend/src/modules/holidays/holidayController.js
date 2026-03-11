@@ -1,5 +1,5 @@
-// src/controllers/holidayController.js
-import connectDB from "../db/index.js";
+// modules/holidays/holidayController.js
+import connectDB from "../../db/index.js";
 
 // GET /api/holidays
 export const getHolidays = async (req, res) => {
@@ -39,9 +39,9 @@ export const createHoliday = async (req, res) => {
     }
 };
 
-// POST /api/holidays/bulk  – add multiple at once
+// POST /api/holidays/bulk
 export const bulkCreateHolidays = async (req, res) => {
-    const { holidays } = req.body; // [{holiday_date, description}]
+    const { holidays } = req.body;
     if (!holidays || !holidays.length)
         return res.status(400).json({ success: false, message: "holidays array is required." });
     try {

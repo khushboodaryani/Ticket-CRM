@@ -1,7 +1,7 @@
-// src/controllers/authController.js
+// modules/auth/authController.js
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import connectDB from "../db/index.js";
+import connectDB from "../../db/index.js";
 import dotenv from "dotenv";
 dotenv.config();
 

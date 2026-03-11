@@ -1,4 +1,4 @@
-// src/app.js
+// src/app.js  — Modular Monolith version
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -7,14 +7,18 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { errorHandler, notFoundHandler } from "./middlewares/errorHandling.js";
-import authRoutes from "./routes/authRoutes.js";
-import userRoutes from "./routes/userRoutes.js";
-import customerRoutes from "./routes/customerRoutes.js";
-import projectRoutes from "./routes/projectRoutes.js";
-import ticketRoutes from "./routes/ticketRoutes.js";
-import shiftRoutes from "./routes/shiftRoutes.js";
-import holidayRoutes from "./routes/holidayRoutes.js";
-import dashboardRoutes from "./routes/dashboardRoutes.js";
+
+// === Module Imports ===
+import authRoutes         from "./modules/auth/authRoutes.js";
+import userRoutes         from "./modules/users/userRoutes.js";
+import customerRoutes     from "./modules/customers/customerRoutes.js";
+import projectRoutes      from "./modules/projects/projectRoutes.js";
+import ticketRoutes       from "./modules/tickets/ticketRoutes.js";
+import shiftRoutes        from "./modules/shifts/shiftRoutes.js";
+import holidayRoutes      from "./modules/holidays/holidayRoutes.js";
+import dashboardRoutes    from "./modules/dashboard/dashboardRoutes.js";
+import queueRoutes        from "./modules/queues/queueRoutes.js";
+import notificationRoutes from "./modules/notifications/notificationRoutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,17 +45,19 @@ app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 app.use("/attachments", express.static(path.join(__dirname, "..", "public", "attachments")));
 
 // Health check
-app.get("/health", (req, res) => res.json({ status: "ok", service: "Ticket CRM Backend", timestamp: new Date().toISOString() }));
+app.get("/health", (req, res) => res.json({ status: "ok", service: "Ticket CRM Backend (Modular)", timestamp: new Date().toISOString() }));
 
-// API Routes
-app.use("/api/auth", authRoutes);
-app.use("/api/users", userRoutes);
-app.use("/api/customers", customerRoutes);
-app.use("/api/projects", projectRoutes);
-app.use("/api/tickets", ticketRoutes);
-app.use("/api/shifts", shiftRoutes);
-app.use("/api/holidays", holidayRoutes);
-app.use("/api/dashboard", dashboardRoutes);
+// === API Routes ===
+app.use("/api/auth",           authRoutes);
+app.use("/api/users",          userRoutes);
+app.use("/api/customers",      customerRoutes);
+app.use("/api/projects",       projectRoutes);
+app.use("/api/tickets",        ticketRoutes);
+app.use("/api/shifts",         shiftRoutes);
+app.use("/api/holidays",       holidayRoutes);
+app.use("/api/dashboard",      dashboardRoutes);
+app.use("/api/queues",         queueRoutes);
+app.use("/api/notifications",  notificationRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

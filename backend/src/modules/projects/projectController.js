@@ -1,5 +1,5 @@
-// src/controllers/projectController.js
-import connectDB from "../db/index.js";
+// modules/projects/projectController.js
+import connectDB from "../../db/index.js";
 
 // GET /api/projects
 export const getProjects = async (req, res) => {

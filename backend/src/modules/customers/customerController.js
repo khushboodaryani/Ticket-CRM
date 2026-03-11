@@ -1,5 +1,5 @@
-// src/controllers/customerController.js
-import connectDB from "../db/index.js";
+// modules/customers/customerController.js
+import connectDB from "../../db/index.js";
 
 // GET /api/customers
 export const getCustomers = async (req, res) => {

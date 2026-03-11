@@ -1,6 +1,6 @@
-// src/controllers/userController.js
+// modules/users/userController.js
 import bcrypt from "bcrypt";
-import connectDB from "../db/index.js";
+import connectDB from "../../db/index.js";
 
 const VALID_ROLES = ["superadmin", "gm", "manager", "tl", "agent"];
 
@@ -52,7 +52,6 @@ export const getUserById = async (req, res) => {
 
 // POST /api/users  (superadmin only)
 export const createUser = async (req, res) => {
-    // Only superadmin can create users
     if (req.user.role !== 'superadmin')
         return res.status(403).json({ success: false, message: 'Only superadmin can create users.' });
 
@@ -92,7 +91,6 @@ export const updateUser = async (req, res) => {
         if (name) { updates.push('name=?'); vals.push(name); }
         if (email) { updates.push('email=?'); vals.push(email); }
 
-        // Only superadmin can change a user's role
         if (role && VALID_ROLES.includes(role)) {
             if (req.user.role !== 'superadmin')
                 return res.status(403).json({ success: false, message: 'Only superadmin can change user roles.' });
@@ -114,7 +112,7 @@ export const updateUser = async (req, res) => {
     }
 };
 
-// GET /api/users/hierarchy/tree – Returns reporting tree
+// GET /api/users/hierarchy/tree
 export const getHierarchy = async (req, res) => {
     try {
         const pool = connectDB();

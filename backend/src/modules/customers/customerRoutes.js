@@ -1,7 +1,7 @@
-// src/routes/customerRoutes.js
+// modules/customers/customerRoutes.js
 import { Router } from "express";
-import { authenticateToken, requireRole } from "../middlewares/auth.js";
-import { getCustomers, getCustomerById, createCustomer, updateCustomer, deleteCustomer } from "../controllers/customerController.js";
+import { authenticateToken, requireRole } from "../../middlewares/auth.js";
+import { getCustomers, getCustomerById, createCustomer, updateCustomer, deleteCustomer } from "./customerController.js";
 
 const router = Router();
 router.use(authenticateToken);

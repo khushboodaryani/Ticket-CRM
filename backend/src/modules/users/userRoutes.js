@@ -1,7 +1,7 @@
-// src/routes/userRoutes.js
+// modules/users/userRoutes.js
 import { Router } from "express";
-import { authenticateToken, requireRole } from "../middlewares/auth.js";
-import { getUsers, getUserById, createUser, updateUser, getHierarchy } from "../controllers/userController.js";
+import { authenticateToken, requireRole } from "../../middlewares/auth.js";
+import { getUsers, getUserById, createUser, updateUser, getHierarchy } from "./userController.js";
 
 const router = Router();
 router.use(authenticateToken);

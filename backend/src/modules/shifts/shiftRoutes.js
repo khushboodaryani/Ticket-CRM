@@ -1,7 +1,7 @@
-// src/routes/shiftRoutes.js
+// modules/shifts/shiftRoutes.js
 import { Router } from "express";
-import { authenticateToken, requireRole } from "../middlewares/auth.js";
-import { getShifts, getShiftById, createShift, updateShift, updateShiftMembers } from "../controllers/shiftController.js";
+import { authenticateToken, requireRole } from "../../middlewares/auth.js";
+import { getShifts, getShiftById, createShift, updateShift, updateShiftMembers } from "./shiftController.js";
 
 const router = Router();
 router.use(authenticateToken);

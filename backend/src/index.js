@@ -4,7 +4,7 @@ dotenv.config();
 
 import { app } from "./app.js";
 import connectDB from "./db/index.js";
-import { startSLAEngine } from "./services/slaEngine.js";
+import { startSLAEngine } from "./modules/sla/slaEngine.js";
 import { logger } from "./logger.js";
 
 const PORT = process.env.PORT || 8450;

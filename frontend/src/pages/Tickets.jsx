@@ -48,8 +48,9 @@ function LevelBadge({ l }) { return <span className={`level-badge level-${l}`}>L
 export default function Tickets() {
     const { user } = useAuth()
     const [tickets, setTickets] = useState([])
+    const [queues, setQueues] = useState([])
     const [loading, setLoading] = useState(true)
-    const [filters, setFilters] = useState({ status: '', priority: '', escalation_level: '', source: '', search: '' })
+    const [filters, setFilters] = useState({ status: '', priority: '', escalation_level: '', queue_id: '', source: '', search: '' })
     const [page, setPage] = useState(1)
     const [total, setTotal] = useState(0)
     const navigate = useNavigate()
@@ -63,6 +64,13 @@ export default function Tickets() {
 
     const canImport = ['superadmin', 'gm', 'manager'].includes(user?.role)
 
+    const fetchQueues = async () => {
+        try {
+            const { data } = await api.get('/queues')
+            setQueues(data.queues || [])
+        } catch { }
+    }
+
     const fetchTickets = async () => {
         setLoading(true)
         try {
@@ -70,6 +78,7 @@ export default function Tickets() {
             if (filters.status) params.status = filters.status
             if (filters.priority) params.priority = filters.priority
             if (filters.escalation_level) params.escalation_level = filters.escalation_level
+            if (filters.queue_id) params.queue_id = filters.queue_id
             const { data } = await api.get('/tickets', { params })
             setTickets(data.tickets)
             setTotal(data.pagination.total)
@@ -77,6 +86,7 @@ export default function Tickets() {
         setLoading(false)
     }
 
+    useEffect(() => { fetchQueues() }, [])
     useEffect(() => { fetchTickets() }, [page, filters])
 
     // Client-side filter for search + source
@@ -202,7 +212,7 @@ export default function Tickets() {
                 )}
 
                 <div className="card">
-                    <div className="filters-bar">
+                    <div className="filters-bar" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
                         <div className="search-box">
                             <span className="search-icon">🔍</span>
                             <input
@@ -223,6 +233,10 @@ export default function Tickets() {
                         <select className="filter-select" value={filters.priority} onChange={e => { setFilters(p => ({ ...p, priority: e.target.value })); setPage(1) }}>
                             <option value="">All Priority</option>
                             {['P1', 'P2', 'P3', 'P4', 'P5'].map(p => <option key={p} value={p}>{p}</option>)}
+                        </select>
+                        <select className="filter-select" value={filters.queue_id} onChange={e => { setFilters(p => ({ ...p, queue_id: e.target.value })); setPage(1) }}>
+                            <option value="">All Queues</option>
+                            {queues.map(q => <option key={q.id} value={q.id}>{q.name}</option>)}
                         </select>
                         <select className="filter-select" value={filters.escalation_level} onChange={e => { setFilters(p => ({ ...p, escalation_level: e.target.value })); setPage(1) }}>
                             <option value="">All Levels</option>
@@ -255,6 +269,7 @@ export default function Tickets() {
                                     <th>Customer / Project</th>
                                     <th>Category</th>
                                     <th>Source</th>
+                                    <th>Queue</th>
                                     <th>Priority</th>
                                     <th>Status</th>
                                     <th>Level</th>
@@ -265,9 +280,9 @@ export default function Tickets() {
                             </thead>
                             <tbody>
                                 {loading ? (
-                                    <tr><td colSpan={11} style={{ textAlign: 'center', padding: 40 }}><div className="spinner" style={{ margin: 'auto' }} /></td></tr>
+                                    <tr><td colSpan={12} style={{ textAlign: 'center', padding: 40 }}><div className="spinner" style={{ margin: 'auto' }} /></td></tr>
                                 ) : filtered.length === 0 ? (
-                                    <tr><td colSpan={11} className="empty-row">No tickets found</td></tr>
+                                    <tr><td colSpan={12} className="empty-row">No tickets found</td></tr>
                                 ) : filtered.map(t => (
                                     <tr
                                         key={t.id}
@@ -291,6 +306,11 @@ export default function Tickets() {
                                         </td>
                                         <td>{t.category}</td>
                                         <td><SourceBadge s={t.source || 'manual'} /></td>
+                                        <td>
+                                            {t.queue_name ? (
+                                                <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>{t.queue_name}</span>
+                                            ) : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>}
+                                        </td>
                                         <td><PriorityBadge p={t.priority} /></td>
                                         <td><StatusBadge s={t.status} /></td>
                                         <td><LevelBadge l={t.escalation_level} /></td>

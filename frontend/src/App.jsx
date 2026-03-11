@@ -18,6 +18,7 @@ import Customers from './pages/Customers'
 import Projects from './pages/Projects'
 import Shifts from './pages/Shifts'
 import Holidays from './pages/Holidays'
+import Queues from './pages/Queues'
 
 export default function App() {
     return (
@@ -63,6 +64,9 @@ export default function App() {
                             } />
                             <Route path="/holidays" element={
                                 <ProtectedRoute roles={['superadmin']}><Holidays /></ProtectedRoute>
+                            } />
+                            <Route path="/queues" element={
+                                <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Queues /></ProtectedRoute>
                             } />
                         </Route>
                         <Route path="*" element={<Navigate to="/dashboard" replace />} />
