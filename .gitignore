@@ -1,0 +1,30 @@
+# Root .gitignore for Ticket_CRM
+
+# Dependencies
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Environment files
+.env
+backend/.env
+frontend/.env
+
+# Build outputs
+dist/
+build/
+frontend/dist/
+
+# Logs
+logs/
+*.log
+backend/logs/
+
+# System files
+.DS_Store
+Thumbs.db
+.gemini/
+.agents/
+.agent/
+_agents/
+_agent/
