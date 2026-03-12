@@ -26,6 +26,7 @@
     "mysql2": "^3.11.4",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.16",
+    "socket.io": "^4.8.3",
     "uuid": "^10.0.0",
     "winston": "^3.16.0"
   }

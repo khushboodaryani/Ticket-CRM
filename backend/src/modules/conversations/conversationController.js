@@ -1,6 +1,6 @@
-// modules/conversations/conversationController.js
 import connectDB from "../../db/index.js";
 import { createNotification } from "../notifications/notificationController.js";
+import { broadcast } from "../../services/socketService.js";
 
 /**
  * Get or create conversation for a ticket
@@ -88,6 +88,19 @@ export const addMessage = async (req, res) => {
              VALUES (?,?,?,?,?)`,
             [conversation.id, req.user.userId, 'agent', message_body.trim(), isInternal]
         );
+
+        // Broadcast real-time message event
+        broadcast("new_message", {
+            id: msgResult.insertId,
+            conversation_id: conversation.id,
+            ticket_id: ticketId,
+            sender_id: req.user.userId,
+            sender_name: req.user.name,
+            sender_type: 'agent',
+            message_body: message_body.trim(),
+            is_internal_note: isInternal,
+            created_at: new Date()
+        });
 
         // Log to ticket activity
         await pool.query(

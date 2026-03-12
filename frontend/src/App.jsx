@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { AuthProvider } from './context/AuthContext'
 import { ThemeProvider } from './context/ThemeContext'
+import { SocketProvider } from './context/SocketContext'
 import Layout from './components/Layout/Layout'
 import ProtectedRoute from './components/Layout/ProtectedRoute'
 
@@ -24,54 +25,56 @@ export default function App() {
     return (
         <ThemeProvider>
             <AuthProvider>
-                <BrowserRouter>
-                    <Toaster
-                        position="top-right"
-                        toastOptions={{
-                            style: {
-                                background: 'var(--bg-card)',
-                                color: 'var(--text-primary)',
-                                border: '1px solid var(--border)',
-                                borderRadius: '10px',
-                                fontSize: '13px',
-                            },
-                            success: { iconTheme: { primary: '#22c55e', secondary: 'var(--bg-card)' } },
-                            error: { iconTheme: { primary: '#ef4444', secondary: 'var(--bg-card)' } },
-                        }}
-                    />
-                    <Routes>
-                        <Route path="/login" element={<Login />} />
-                        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <SocketProvider>
+                    <BrowserRouter>
+                        <Toaster
+                            position="top-right"
+                            toastOptions={{
+                                style: {
+                                    background: 'var(--bg-card)',
+                                    color: 'var(--text-primary)',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: '10px',
+                                    fontSize: '13px',
+                                },
+                                success: { iconTheme: { primary: '#22c55e', secondary: 'var(--bg-card)' } },
+                                error: { iconTheme: { primary: '#ef4444', secondary: 'var(--bg-card)' } },
+                            }}
+                        />
+                        <Routes>
+                            <Route path="/login" element={<Login />} />
+                            <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
-                        <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-                            <Route path="/dashboard" element={<Dashboard />} />
-                            <Route path="/tickets" element={<Tickets />} />
-                            <Route path="/tickets/new" element={<TicketForm />} />
-                            <Route path="/tickets/import" element={
-                                <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><BulkImport /></ProtectedRoute>
-                            } />
-                            <Route path="/tickets/queue" element={
-                                <ProtectedRoute roles={['superadmin', 'gm', 'manager', 'tl']}><STRQueue /></ProtectedRoute>
-                            } />
-                            <Route path="/tickets/:id" element={<TicketDetail />} />
-                            <Route path="/customers" element={<Customers />} />
-                            <Route path="/projects" element={<Projects />} />
-                            <Route path="/users" element={
-                                <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Users /></ProtectedRoute>
-                            } />
-                            <Route path="/shifts" element={
-                                <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Shifts /></ProtectedRoute>
-                            } />
-                            <Route path="/holidays" element={
-                                <ProtectedRoute roles={['superadmin']}><Holidays /></ProtectedRoute>
-                            } />
-                            <Route path="/queues" element={
-                                <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Queues /></ProtectedRoute>
-                            } />
-                        </Route>
-                        <Route path="*" element={<Navigate to="/dashboard" replace />} />
-                    </Routes>
-                </BrowserRouter>
+                            <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+                                <Route path="/dashboard" element={<Dashboard />} />
+                                <Route path="/tickets" element={<Tickets />} />
+                                <Route path="/tickets/new" element={<TicketForm />} />
+                                <Route path="/tickets/import" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><BulkImport /></ProtectedRoute>
+                                } />
+                                <Route path="/tickets/queue" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager', 'tl']}><STRQueue /></ProtectedRoute>
+                                } />
+                                <Route path="/tickets/:id" element={<TicketDetail />} />
+                                <Route path="/customers" element={<Customers />} />
+                                <Route path="/projects" element={<Projects />} />
+                                <Route path="/users" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Users /></ProtectedRoute>
+                                } />
+                                <Route path="/shifts" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Shifts /></ProtectedRoute>
+                                } />
+                                <Route path="/holidays" element={
+                                    <ProtectedRoute roles={['superadmin']}><Holidays /></ProtectedRoute>
+                                } />
+                                <Route path="/queues" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Queues /></ProtectedRoute>
+                                } />
+                            </Route>
+                            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                        </Routes>
+                    </BrowserRouter>
+                </SocketProvider>
             </AuthProvider>
         </ThemeProvider>
     )

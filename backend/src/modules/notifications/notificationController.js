@@ -1,5 +1,4 @@
-// modules/notifications/notificationController.js
-import connectDB from "../../db/index.js";
+import { emitToUser } from "../../services/socketService.js";
 
 /**
  * Utility: Create an in-app notification for a user
@@ -7,10 +6,22 @@ import connectDB from "../../db/index.js";
  */
 export const createNotification = async (pool, { user_id, type, title, body, entity_id }) => {
     try {
-        await pool.query(
+        const [result] = await pool.query(
             `INSERT INTO in_app_notifications (user_id, type, title, body, entity_id) VALUES (?,?,?,?,?)`,
             [user_id, type, title, body || null, entity_id || null]
         );
+
+        // Emit real-time socket event
+        emitToUser(user_id, "new_notification", {
+            id: result.insertId,
+            user_id,
+            type,
+            title,
+            body,
+            entity_id,
+            is_read: 0,
+            created_at: new Date()
+        });
     } catch (err) {
         console.error("createNotification error:", err.message);
     }

@@ -4,6 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
+import { useSocket } from '../context/SocketContext'
 import toast from 'react-hot-toast'
 
 function StatusBadge({ s }) { return <span className={`badge badge-${s}`}>{s?.replace('_', ' ')}</span> }
@@ -26,6 +27,7 @@ export default function TicketDetail() {
     const { id } = useParams()
     const navigate = useNavigate()
     const { user } = useAuth()
+    const socket = useSocket()
     const chatEndRef = useRef(null)
 
     const [ticket, setTicket] = useState(null)
@@ -38,6 +40,25 @@ export default function TicketDetail() {
     const [loading, setLoading] = useState(true)
     const [updating, setUpdating] = useState(false)
     const [sending, setSending] = useState(false)
+
+    useEffect(() => {
+        if (!socket || !id) return;
+
+        socket.on('new_message', (msg) => {
+            // Only care about messages for THIS ticket
+            if (String(msg.ticket_id) === String(id)) {
+                setMessages(prev => {
+                    // Avoid duplicates if loadData also triggered
+                    if (prev.some(m => m.id === msg.id)) return prev;
+                    return [...prev, msg];
+                });
+            }
+        });
+
+        return () => {
+            socket.off('new_message');
+        };
+    }, [socket, id])
 
     // Sidebar form states
     const [status, setStatus] = useState('')

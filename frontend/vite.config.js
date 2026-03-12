@@ -13,6 +13,11 @@ export default defineConfig({
             '/attachments': {
                 target: 'http://localhost:8450',
                 changeOrigin: true,
+            },
+            '/socket.io': {
+                target: 'http://localhost:8450',
+                ws: true,
+                changeOrigin: true,
             }
         }
     }

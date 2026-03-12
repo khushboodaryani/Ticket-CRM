@@ -3,6 +3,7 @@ import connectDB from "../../db/index.js";
 import moment from "moment-timezone";
 import { sendTicketNotification } from "../notifications/emailService.js";
 import { createNotification } from "../notifications/notificationController.js";
+import { workflowEvents } from "../workflows/workflowEngine.js";
 import { logger } from "../../logger.js";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
@@ -209,6 +210,12 @@ export const createTicket = async (req, res) => {
             });
         }
 
+        // Emit workflow event
+        workflowEvents.emit('ticket_created', {
+            ticketId,
+            payload: { customer_id, project_id, category, priority, status: 'open', source: source || 'manual', queue_id }
+        });
+
         return res.status(201).json({ success: true, message: "Ticket created.", ticketId, ticket_number });
     } catch (err) {
         console.error("createTicket:", err);
@@ -256,6 +263,19 @@ export const updateTicket = async (req, res) => {
                 title: `Ticket Assigned to You: ${existing[0].ticket_number}`,
                 body: `Ticket ${existing[0].ticket_number} has been assigned to you by ${req.user.name}.`,
                 entity_id: req.params.id
+            });
+        }
+
+        // Emit workflow event
+        workflowEvents.emit('ticket_updated', {
+            ticketId: req.params.id,
+            payload: { category, priority, description, status, assigned_to }
+        });
+
+        if (status && status !== existing[0].status) {
+            workflowEvents.emit('status_changed', {
+                ticketId: req.params.id,
+                payload: { old_status: existing[0].status, new_status: status }
             });
         }
 

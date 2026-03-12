@@ -1,11 +1,14 @@
-// src/components/Layout/Topbar.jsx
 import { useState, useEffect, useRef } from 'react'
-import { useTheme } from '../../context/ThemeContext'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../../context/AuthContext'
+import { useSocket } from '../../context/SocketContext'
+import { useTheme } from '../../context/ThemeContext'
 import axios from '../../api/axios'
 
 export default function Topbar({ title, subtitle, actions }) {
+    const { user } = useAuth()
     const { theme, toggleTheme } = useTheme()
+    const socket = useSocket()
     const navigate = useNavigate()
     const [notifications, setNotifications] = useState([])
     const [unread, setUnread] = useState(0)
@@ -22,9 +25,20 @@ export default function Topbar({ title, subtitle, actions }) {
 
     useEffect(() => {
         fetchNotifications()
-        const interval = setInterval(fetchNotifications, 30000)
-        return () => clearInterval(interval)
     }, [])
+
+    useEffect(() => {
+        if (!socket) return;
+
+        socket.on('new_notification', (notif) => {
+            setNotifications(prev => [notif, ...prev].slice(0, 5));
+            setUnread(prev => prev + 1);
+        });
+
+        return () => {
+            socket.off('new_notification');
+        };
+    }, [socket])
 
     useEffect(() => {
         const handleClick = (e) => { if (bellRef.current && !bellRef.current.contains(e.target)) setShowBell(false) }

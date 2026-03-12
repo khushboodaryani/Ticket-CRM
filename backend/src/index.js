@@ -5,7 +5,10 @@ dotenv.config();
 import { app } from "./app.js";
 import connectDB from "./db/index.js";
 import { startSLAEngine } from "./modules/sla/slaEngine.js";
+import { initWorkflowEngine } from "./modules/workflows/workflowEngine.js";
 import { logger } from "./logger.js";
+
+import { initSocket } from "./services/socketService.js";
 
 const PORT = process.env.PORT || 8450;
 
@@ -17,13 +20,19 @@ async function startServer() {
         logger.info("✅ Database connection verified.");
         conn.release();
 
-        app.listen(PORT, () => {
+        const server = app.listen(PORT, () => {
             logger.info(`🚀 Ticket CRM Server running on http://localhost:${PORT}`);
             logger.info(`📋 Environment: ${process.env.NODE_ENV || "development"}`);
         });
 
+        // Initialize Socket.io
+        initSocket(server);
+
         // Start the SLA background engine
         startSLAEngine();
+
+        // Initialize Workflow Engine
+        initWorkflowEngine();
 
     } catch (err) {
         logger.error("❌ Server startup failed:", err.message);
