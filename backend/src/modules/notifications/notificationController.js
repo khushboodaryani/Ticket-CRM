@@ -1,3 +1,4 @@
+import connectDB from "../../db/index.js";
 import { emitToUser } from "../../services/socketService.js";
 
 /**
