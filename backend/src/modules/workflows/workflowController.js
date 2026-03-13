@@ -22,9 +22,12 @@ export const createRule = async (req, res) => {
 
     try {
         const pool = connectDB();
+        const finalConditions = typeof conditions === 'string' ? conditions : JSON.stringify(conditions || {});
+        const finalActions = typeof actions === 'string' ? actions : JSON.stringify(actions);
+
         const [result] = await pool.query(
-            "INSERT INTO workflow_rules (name, description, trigger_event, conditions, actions, created_by) VALUES (?,?,?,?,?,?)",
-            [name, description || null, trigger_event, JSON.stringify(conditions || {}), JSON.stringify(actions), req.user.userId]
+            "INSERT INTO workflow_rules (name, trigger_event, conditions, actions, created_by) VALUES (?,?,?,?,?)",
+            [name, trigger_event, finalConditions, finalActions, req.user.userId]
         );
         return res.status(201).json({ success: true, message: "Workflow rule created.", ruleId: result.insertId });
     } catch (err) {
@@ -44,8 +47,14 @@ export const updateRule = async (req, res) => {
         if (name) { updates.push("name=?"); vals.push(name); }
         if (description !== undefined) { updates.push("description=?"); vals.push(description); }
         if (trigger_event) { updates.push("trigger_event=?"); vals.push(trigger_event); }
-        if (conditions) { updates.push("conditions=?"); vals.push(JSON.stringify(conditions)); }
-        if (actions) { updates.push("actions=?"); vals.push(JSON.stringify(actions)); }
+        if (conditions) { 
+            updates.push("conditions=?"); 
+            vals.push(typeof conditions === 'string' ? conditions : JSON.stringify(conditions)); 
+        }
+        if (actions) { 
+            updates.push("actions=?"); 
+            vals.push(typeof actions === 'string' ? actions : JSON.stringify(actions)); 
+        }
         if (is_active !== undefined) { updates.push("is_active=?"); vals.push(is_active ? 1 : 0); }
 
         if (!updates.length) return res.status(400).json({ success: false, message: "Nothing to update." });
@@ -67,6 +76,18 @@ export const deleteRule = async (req, res) => {
         return res.json({ success: true, message: "Workflow rule deleted." });
     } catch (err) {
         console.error("deleteRule:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// PATCH /api/workflows/rules/:id/toggle
+export const toggleRule = async (req, res) => {
+    try {
+        const pool = connectDB();
+        await pool.query("UPDATE workflow_rules SET is_active = NOT is_active WHERE id = ?", [req.params.id]);
+        return res.json({ success: true, message: "Workflow status toggled." });
+    } catch (err) {
+        console.error("toggleRule:", err);
         return res.status(500).json({ success: false, message: "Server error." });
     }
 };

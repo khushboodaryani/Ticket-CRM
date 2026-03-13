@@ -80,8 +80,8 @@ export const addMessage = async (req, res) => {
         const ticket = ticketRows[0];
 
         const conversation = await getOrCreateConversation(pool, ticketId);
-
         const isInternal = is_internal_note ? 1 : 0;
+
         const [msgResult] = await pool.query(
             `INSERT INTO conversation_messages
              (conversation_id, sender_id, sender_type, message_body, is_internal_note)
@@ -89,9 +89,11 @@ export const addMessage = async (req, res) => {
             [conversation.id, req.user.userId, 'agent', message_body.trim(), isInternal]
         );
 
-        // Broadcast real-time message event
+        const messageId = msgResult.insertId;
+
+        // Broadcast real-time message event (Internal CRM Frontend)
         broadcast("new_message", {
-            id: msgResult.insertId,
+            id: messageId,
             conversation_id: conversation.id,
             ticket_id: ticketId,
             sender_id: req.user.userId,
@@ -102,6 +104,13 @@ export const addMessage = async (req, res) => {
             created_at: new Date()
         });
 
+        // Trigger Outbound Channel Adapter if not internal
+        if (!isInternal) {
+            import("../../services/messagingService.js").then(m => {
+                m.handleOutbound(conversation.id, { message: message_body.trim() });
+            }).catch(e => console.error("Outbound trigger failed:", e));
+        }
+
         // Log to ticket activity
         await pool.query(
             `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
@@ -109,36 +118,15 @@ export const addMessage = async (req, res) => {
              isInternal ? 'Internal note added' : 'Reply added to conversation']
         );
 
-        // Build set of users to notify (exclude the sender)
+        // Notify relevant users
         const toNotify = new Set();
-
-        // Always notify the assigned agent if different from sender
-        if (ticket.assigned_to && ticket.assigned_to !== req.user.userId) {
-            toNotify.add(ticket.assigned_to);
-        }
-
-        // Always notify the ticket creator if different from sender and different from assigned
-        if (ticket.created_by && ticket.created_by !== req.user.userId) {
-            toNotify.add(ticket.created_by);
-        }
-
-        // Also notify other agents who have participated in this conversation
-        const [participants] = await pool.query(
-            `SELECT DISTINCT sender_id FROM conversation_messages
-             WHERE conversation_id=? AND sender_id IS NOT NULL AND sender_id != ?`,
-            [conversation.id, req.user.userId]
-        );
-        participants.forEach(p => {
-            if (p.sender_id !== req.user.userId) toNotify.add(p.sender_id);
-        });
+        if (ticket.assigned_to && ticket.assigned_to !== req.user.userId) toNotify.add(ticket.assigned_to);
+        if (ticket.created_by && ticket.created_by !== req.user.userId) toNotify.add(ticket.created_by);
 
         const messageType = isInternal ? 'internal note' : 'reply';
-        const notifTitle = isInternal
-            ? `📝 Internal Note on ${ticket.ticket_number}`
-            : `💬 New Reply on ${ticket.ticket_number}`;
-        const notifBody = `${req.user.name} added a ${messageType}: "${message_body.trim().slice(0, 80)}${message_body.length > 80 ? '...' : ''}"`;
+        const notifTitle = isInternal ? `📝 Internal Note on ${ticket.ticket_number}` : `💬 New Reply on ${ticket.ticket_number}`;
+        const notifBody = `${req.user.name} added a ${messageType}: "${message_body.trim().slice(0, 80)}..."`;
 
-        // Send notifications to all relevant users
         for (const userId of toNotify) {
             await createNotification(pool, {
                 user_id: userId,
@@ -152,7 +140,7 @@ export const addMessage = async (req, res) => {
         return res.status(201).json({
             success: true,
             message: isInternal ? "Internal note added." : "Message sent.",
-            messageId: msgResult.insertId
+            messageId
         });
     } catch (err) {
         console.error("addMessage:", err);

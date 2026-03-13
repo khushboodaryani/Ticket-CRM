@@ -20,6 +20,9 @@ import Projects from './pages/Projects'
 import Shifts from './pages/Shifts'
 import Holidays from './pages/Holidays'
 import Queues from './pages/Queues'
+import WorkflowBuilder from './pages/WorkflowBuilder'
+import Analytics from './pages/Analytics'
+
 
 export default function App() {
     return (
@@ -70,6 +73,13 @@ export default function App() {
                                 <Route path="/queues" element={
                                     <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Queues /></ProtectedRoute>
                                 } />
+                                <Route path="/workflows" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><WorkflowBuilder /></ProtectedRoute>
+                                } />
+                                <Route path="/analytics" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Analytics /></ProtectedRoute>
+                                } />
+
                             </Route>
                             <Route path="*" element={<Navigate to="/dashboard" replace />} />
                         </Routes>

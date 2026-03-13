@@ -20,6 +20,8 @@ import dashboardRoutes    from "./modules/dashboard/dashboardRoutes.js";
 import queueRoutes        from "./modules/queues/queueRoutes.js";
 import notificationRoutes from "./modules/notifications/notificationRoutes.js";
 import workflowRoutes     from "./modules/workflows/workflowRoutes.js";
+import analyticsRoutes    from "./modules/analytics/analyticsRoutes.js";
+
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -60,6 +62,8 @@ app.use("/api/dashboard",      dashboardRoutes);
 app.use("/api/queues",         queueRoutes);
 app.use("/api/notifications",  notificationRoutes);
 app.use("/api/workflows",      workflowRoutes);
+app.use("/api/analytics",      analyticsRoutes);
+
 
 app.use(notFoundHandler);
 app.use(errorHandler);

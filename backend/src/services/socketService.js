@@ -1,13 +1,14 @@
 // src/services/socketService.js
 import { Server } from "socket.io";
 import { logger } from "../logger.js";
+import * as widgetAdapter from "../modules/conversations/adapters/widgetAdapter.js";
 
 let io;
 
 export const initSocket = (server) => {
     io = new Server(server, {
         cors: {
-            origin: "*", // In production, restrict this to your frontend URL
+            origin: "*", 
             methods: ["GET", "POST"]
         }
     });
@@ -15,12 +16,17 @@ export const initSocket = (server) => {
     io.on("connection", (socket) => {
         logger.info(`🔌 New socket connection: ${socket.id}`);
 
-        // Join a room based on user ID for targeted notifications
+        // Join a room based on user ID for targeted notifications (Agents/Admins)
         socket.on("join", (userId) => {
             if (userId) {
                 socket.join(`user_${userId}`);
                 logger.info(`👤 User ${userId} joined their notification room.`);
             }
+        });
+
+        // Guest Messaging (Chat Widget)
+        socket.on("guest_message", (payload) => {
+            widgetAdapter.handleWidgetMessage(socket, payload);
         });
 
         socket.on("disconnect", () => {
