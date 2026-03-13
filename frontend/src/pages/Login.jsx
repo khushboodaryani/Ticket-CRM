@@ -178,6 +178,7 @@ export default function Login() {
         .lp-logo-img {
           height: 80px;
           object-fit: contain;
+          border-radius: 12px;
           filter: drop-shadow(0 4px 16px rgba(0,0,0,0.5)) brightness(1.05);
         }
         .lp-divider {
