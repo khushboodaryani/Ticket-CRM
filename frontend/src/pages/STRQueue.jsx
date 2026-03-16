@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
+import CountdownBadge from '../components/Tickets/CountdownBadge'
 
 function PriorityBadge({ p }) { return <span className={`priority-badge p${p?.[1]}-badge`}>{p}</span> }
 function LevelBadge({ l }) { return <span className={`level-badge level-${l}`}>L{l}</span> }
@@ -82,9 +83,8 @@ export default function STRQueue() {
                                             <td>{t.assigned_to_name || '—'}</td>
                                             <td><span className={`role-badge role-${t.assigned_role}`}>{t.assigned_role}</span></td>
                                             <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.str ? new Date(t.str).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
-                                            <td style={{ fontSize: 12, color: overdue ? 'var(--danger)' : 'var(--text-secondary)' }}>
-                                                {overdue && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 4 }}><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>}
-                                                {t.etr ? new Date(t.etr).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+                                            <td>
+                                                <CountdownBadge etr={t.etr} paused={t.sla_paused === 1 || t.sla_paused_manual === 1} />
                                             </td>
                                             <td><span className={`badge badge-${t.status}`}>{t.status?.replace('_', ' ')}</span></td>
                                         </tr>

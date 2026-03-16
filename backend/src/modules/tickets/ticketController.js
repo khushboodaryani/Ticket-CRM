@@ -139,7 +139,11 @@ export const createTicket = async (req, res) => {
     try {
         const pool = connectDB();
         const now = moment().tz(TZ).format("YYYY-MM-DD HH:mm:ss");
-        const etr = buildETR();
+        
+        // Fetch Resolution Hours for ETR calculation
+        const [policies] = await pool.query(`SELECT resolution_time_hours FROM sla_policies WHERE priority = ?`, [priority]);
+        const resHours = policies[0]?.resolution_time_hours || 2; // Fallback to 2 hours
+        const etr = moment().tz(TZ).add(resHours, "hours").format("YYYY-MM-DD HH:mm:ss");
         const attachment_url = req.file ? `/attachments/${req.file.filename}` : null;
 
         const [countRow] = await pool.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at)=CURDATE()`);
@@ -522,6 +526,10 @@ export const importTickets = async (req, res) => {
         const [allCustomers] = await pool.query("SELECT id, name, customer_code FROM customers");
         const [allUsers] = await pool.query("SELECT id, name, email FROM users WHERE role='agent'");
         const [countRow] = await pool.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at)=CURDATE()`);
+        
+        // Fetch SLA Policies for ETR
+        const [policies] = await pool.query(`SELECT * FROM sla_policies`);
+        const policyMap = policies.reduce((acc, p) => { acc[p.priority] = p; return acc; }, {});
         let nextSeq = (countRow[0]?.cnt || 0) + 1;
 
         const findCustomer = (v) => {
@@ -553,7 +561,9 @@ export const importTickets = async (req, res) => {
 
                 const priority = normPriority(row.priority);
                 const assigned_to = findUser(row.assigned_to)?.id || req.user.userId;
-                const etr = buildETR();
+                
+                const resHours = policyMap[priority]?.resolution_time_hours || 2;
+                const etr = moment().tz(TZ).add(resHours, "hours").format("YYYY-MM-DD HH:mm:ss");
 
                 const [dupes] = await pool.query(
                     `SELECT id FROM tickets WHERE customer_id=? AND project_id=? AND description=? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) LIMIT 1`,
@@ -679,5 +689,56 @@ export const bulkUpdateTickets = async (req, res) => {
     } catch (err) {
         console.error("bulkUpdateTickets:", err);
         return res.status(500).json({ success: false, message: "Bulk update error: " + err.message });
+    }
+};
+
+// PUT /api/tickets/:id/sla-hold
+export const slaHold = async (req, res) => {
+    const { action, reason } = req.body;
+    const { id } = req.params;
+
+    if (!['pause', 'resume'].includes(action)) {
+        return res.status(400).json({ success: false, message: "Action must be 'pause' or 'resume'." });
+    }
+
+    try {
+        const pool = connectDB();
+        const [tickets] = await pool.query(`SELECT * FROM tickets WHERE id=?`, [id]);
+        if (!tickets.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+
+        const ticket = tickets[0];
+
+        if (action === 'pause') {
+            await pool.query(
+                `UPDATE tickets SET sla_paused_manual=1, sla_paused_at=NOW(), sla_pause_reason=? WHERE id=?`,
+                [reason || 'Manual hold', id]
+            );
+            await pool.query(
+                `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'sla_paused',?,?)`,
+                [id, req.user.userId, `SLA paused manually: ${reason || 'No reason given'}`]
+            );
+            return res.json({ success: true, message: "SLA paused manually." });
+        } else {
+            if (!ticket.sla_paused_manual) {
+                 return res.json({ success: true, message: "SLA is already active." });
+            }
+            const pausedAt = ticket.sla_paused_at ? moment(ticket.sla_paused_at).tz(TZ) : moment().tz(TZ);
+            const nowMoment = moment().tz(TZ);
+            const pausedMinutes = nowMoment.diff(pausedAt, "minutes");
+
+            await pool.query(
+                `UPDATE tickets SET sla_paused_manual=0, sla_paused_at=NULL, sla_pause_reason=NULL,
+                 etr = DATE_ADD(etr, INTERVAL ? MINUTE) WHERE id=?`,
+                [pausedMinutes, id]
+            );
+            await pool.query(
+                `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'sla_resumed',?,?)`,
+                [id, req.user.userId, `SLA resumed manually. ETR extended by ${pausedMinutes} min.`]
+            );
+            return res.json({ success: true, message: "SLA resumed manually." });
+        }
+    } catch (err) {
+        console.error("slaHold:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
     }
 };

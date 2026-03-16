@@ -49,11 +49,13 @@ export default function TicketForm() {
         description: '', source: 'manual', assigned_to: '', queue_id: ''
     })
     const [file, setFile] = useState(null)
+    const [slaPolicies, setSlaPolicies] = useState([])
 
     useEffect(() => {
         api.get('/customers').then(r => setCustomers(r.data.customers))
         api.get('/users', { params: { role: 'agent' } }).then(r => setUsers(r.data.users))
         api.get('/queues').then(r => setQueues(r.data.queues || []))
+        api.get('/sla').then(r => setSlaPolicies(r.data.policies || []))
     }, [])
 
     useEffect(() => {
@@ -81,6 +83,8 @@ export default function TicketForm() {
     }
 
     const pInfo = PRIORITY_INFO[form.priority]
+    const pPolicy = slaPolicies.find(p => p.priority === form.priority)
+    const slaDetail = pPolicy ? `Escalates in ${pPolicy.escalation_1_min} min` : pInfo.sla
 
     return (
         <>
@@ -184,7 +188,7 @@ export default function TicketForm() {
                             }} />
                             <span className={`priority-badge p${form.priority[1]}-badge`}>{form.priority}</span>
                             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                                SLA: <strong>{pInfo.sla}</strong> · Agent → TL → Manager → GM
+                                SLA: <strong>{slaDetail}</strong> · Agent → TL → Manager → GM
                             </span>
                         </div>
                     </div>

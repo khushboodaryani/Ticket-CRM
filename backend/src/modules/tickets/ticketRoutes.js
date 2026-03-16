@@ -7,7 +7,7 @@ import {
     escalateTicket, getSTRQueue,
     importTickets, exportTickets, bulkUpdateTickets,
     assignQueue, changePriority,
-    addTask, getTasks, updateTask
+    addTask, getTasks, updateTask, slaHold
 } from "./ticketController.js";
 import conversationRoutes from "../conversations/conversationRoutes.js";
 
@@ -26,6 +26,7 @@ router.get("/:id", getTicketById);
 router.post("/", upload.single("attachment"), createTicket);
 router.put("/:id", upload.single("attachment"), updateTicket);
 router.post("/:id/escalate", requireRole("superadmin", "gm", "manager", "tl"), escalateTicket);
+router.put("/:id/sla-hold", requireRole("superadmin", "manager"), slaHold);
 
 // Queue assignment
 router.put("/:id/queue", requireRole("superadmin", "gm", "manager", "tl"), assignQueue);

@@ -6,7 +6,6 @@
 import cron from "node-cron";
 import moment from "moment-timezone";
 import connectDB from "../../db/index.js";
-import { ESCALATION_THRESHOLDS } from "../../constants.js";
 import { logger } from "../../logger.js";
 import { createNotification } from "../notifications/notificationController.js";
 
@@ -38,7 +37,8 @@ async function isWithinShift(pool, userId) {
         if (!workDays.includes(dayAbbr)) continue;
         if (curTime >= shift.start_time && curTime <= shift.end_time) return true;
     }
-    return false;
+    // If user has NO assigned shifts, default to TRUE to avoid indefinite pausing
+    return shifts.length === 0;
 }
 
 async function findNextAssignee(pool, currentAssigneeId) {
@@ -57,6 +57,10 @@ async function runSLAEngine() {
     try {
         const holiday = await isHoliday(pool, todayStr);
 
+        // Fetch SLA Policies
+        const [policies] = await pool.query(`SELECT * FROM sla_policies`);
+        const policyMap = policies.reduce((acc, p) => { acc[p.priority] = p; return acc; }, {});
+
         const [tickets] = await pool.query(
             `SELECT t.*, u.reporting_to as manager_id
        FROM tickets t
@@ -68,6 +72,15 @@ async function runSLAEngine() {
 
         for (const ticket of tickets) {
             try {
+                const policy = policyMap[ticket.priority];
+                if (!policy) {
+                    logger.warn(`[SLA Engine] No SLA policy for priority ${ticket.priority}`);
+                    continue;
+                }
+                if (ticket.sla_paused_manual === 1) {
+                    continue; // Skip automatic intervals if manual override is lock
+                }
+
                 const assignedUserId = ticket.assigned_to;
                 const inShift = assignedUserId ? await isWithinShift(pool, assignedUserId) : true;
                 const shouldPause = holiday || !inShift;
@@ -123,7 +136,7 @@ async function runSLAEngine() {
                 // --- Escalation Check ---
                 const createdAt = moment(ticket.created_at).tz(TZ);
                 const elapsedMinutes = nowMoment.diff(createdAt, "minutes");
-                const threshold = ESCALATION_THRESHOLDS[ticket.escalation_level];
+                const threshold = policy[`escalation_${ticket.escalation_level}_min`];
 
                 if (!threshold) continue;
 

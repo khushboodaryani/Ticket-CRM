@@ -5,6 +5,7 @@ import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
+import CountdownBadge from '../components/Tickets/CountdownBadge'
 
 const PRIORITY_DOT = { P1: '#ef4444', P2: '#f97316', P3: '#eab308', P4: '#22c55e', P5: '#6b7280' }
 
@@ -316,11 +317,7 @@ export default function Tickets() {
                                         <td><LevelBadge l={t.escalation_level} /></td>
                                         <td>{t.assigned_to_name || <span style={{ color: 'var(--text-muted)' }}>Unassigned</span>}</td>
                                         <td>
-                                            {t.etr ? (
-                                                <span style={{ color: new Date(t.etr) < new Date() && t.status !== 'resolved' && t.status !== 'closed' ? 'var(--danger)' : 'var(--text-secondary)', fontSize: 12 }}>
-                                                    {new Date(t.etr).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                                </span>
-                                            ) : '—'}
+                                            <CountdownBadge etr={t.etr} paused={t.sla_paused === 1 || t.sla_paused_manual === 1} />
                                         </td>
                                         <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                             {new Date(t.created_at).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}

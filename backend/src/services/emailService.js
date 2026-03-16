@@ -27,13 +27,8 @@ if (EMAIL_CONFIG.enabled) {
 export const sendTicketNotification = async (ticket, customerEmail) => {
     if (!customerEmail) return;
 
-    if (!EMAIL_CONFIG.enabled) {
-        logger.info(`📧 Email: Skipping send to ${customerEmail} (No API Key). Ticket: ${ticket.ticket_number}`);
-        return;
-    }
-
     const mailOptions = {
-        from: `"Ticket CRM" <${EMAIL_CONFIG.user}>`,
+        from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
         subject: `[${ticket.ticket_number}] Ticket Created: ${ticket.category}`,
         html: `

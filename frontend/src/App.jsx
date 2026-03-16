@@ -22,6 +22,7 @@ import Holidays from './pages/Holidays'
 import Queues from './pages/Queues'
 import WorkflowBuilder from './pages/WorkflowBuilder'
 import Analytics from './pages/Analytics'
+import SlaSettings from './pages/SlaSettings'
 
 
 export default function App() {
@@ -75,6 +76,9 @@ export default function App() {
                                 } />
                                 <Route path="/workflows" element={
                                     <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><WorkflowBuilder /></ProtectedRoute>
+                                } />
+                                <Route path="/sla" element={
+                                    <ProtectedRoute roles={['superadmin', 'manager']}><SlaSettings /></ProtectedRoute>
                                 } />
                                 <Route path="/analytics" element={
                                     <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Analytics /></ProtectedRoute>

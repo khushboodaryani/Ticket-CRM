@@ -6,6 +6,7 @@ import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
 import { useSocket } from '../context/SocketContext'
 import toast from 'react-hot-toast'
+import CountdownBadge from '../components/Tickets/CountdownBadge'
 
 function StatusBadge({ s }) { return <span className={`badge badge-${s}`}>{s?.replace('_', ' ')}</span> }
 function PriorityBadge({ p }) { return <span className={`priority-badge p${p?.[1]}-badge`}>{p}</span> }
@@ -125,6 +126,14 @@ export default function TicketDetail() {
             loadData()
         } catch (err) { toast.error(err.response?.data?.message || 'Update failed') }
         setUpdating(false)
+    }
+
+    const handleSlaHold = async (action, reason = '') => {
+        try {
+            await api.put(`/tickets/${id}/sla-hold`, { action, reason })
+            toast.success(`SLA ${action === 'pause' ? 'Paused' : 'Resumed'}`)
+            loadData()
+        } catch (err) { toast.error(err.response?.data?.message || 'SLA Action failed') }
     }
 
     const handleSendMessage = async (e) => {
@@ -444,19 +453,54 @@ export default function TicketDetail() {
                         </div>
                         <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
                             {/* SLA Info */}
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                                <div style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
-                                    <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>Created</div>
-                                    <div style={{ fontSize: 12, fontWeight: 600 }}>
-                                        {ticket.str ? new Date(ticket.str).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : new Date(ticket.created_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                            {/* SLA Health Widget */}
+                            <div style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--bg-input)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>SLA Health</span>
+                                    <CountdownBadge etr={ticket.etr} paused={ticket.sla_paused === 1 || ticket.sla_paused_manual === 1} />
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                                    <div>
+                                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Created</div>
+                                        <div style={{ fontSize: 12, fontWeight: 600 }}>
+                                            {new Date(ticket.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>ETR Target</div>
+                                        <div style={{ fontSize: 12, fontWeight: 600, color: isOverdue ? '#ef4444' : 'var(--text-primary)' }}>
+                                            {ticket.etr ? new Date(ticket.etr).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                                        </div>
                                     </div>
                                 </div>
-                                <div style={{ padding: '10px 12px', borderRadius: 8, background: isOverdue ? '#fee2e2' : 'var(--bg-input)', border: `1px solid ${isOverdue ? '#fca5a5' : 'var(--border)'}` }}>
-                                    <div style={{ fontSize: 10, color: isOverdue ? '#ef4444' : 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>ETR</div>
-                                    <div style={{ fontSize: 12, fontWeight: 600, color: isOverdue ? '#dc2626' : undefined }}>
-                                        {ticket.etr ? new Date(ticket.etr).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}
+                                
+                                {ticket.sla_pause_reason && (
+                                    <div style={{ fontSize: 11, color: '#b45309', background: '#fffbeb', padding: '6px 10px', borderRadius: 6, border: '1px solid #fde68a' }}>
+                                        ⏸ {ticket.sla_pause_reason}
                                     </div>
-                                </div>
+                                )}
+
+                                {['superadmin', 'manager'].includes(user?.role) && (
+                                    <button 
+                                        className="btn btn-sm" 
+                                        style={{ 
+                                            width: '100%', justifyContent: 'center', gap: 6,
+                                            background: ticket.sla_paused_manual ? 'var(--accent)' : 'transparent',
+                                            color: ticket.sla_paused_manual ? '#fff' : 'var(--text-primary)',
+                                            border: ticket.sla_paused_manual ? 'none' : '1px solid var(--border)'
+                                        }}
+                                        onClick={() => {
+                                            if (ticket.sla_paused_manual) {
+                                                handleSlaHold('resume');
+                                            } else {
+                                                const r = prompt("Reason for pausing SLA (e.g., Client Wait, Vendor Hold):");
+                                                if (r !== null) handleSlaHold('pause', r);
+                                            }
+                                        }}
+                                    >
+                                        {ticket.sla_paused_manual ? '▶ Resume Timer' : '⏸ Pause SLA (Hold)'}
+                                    </button>
+                                )}
                             </div>
 
                             {/* Escalation indicator */}
