@@ -175,12 +175,12 @@ CREATE TABLE IF NOT EXISTS holidays (
 -- Password: Admin@1234  (bcrypt hash below)
 -- Change immediately after first login!
 -- ============================================================
-INSERT IGNORE INTO users (name, email, password_hash, role, reporting_to, is_active)
-VALUES (
-  'Super Admin',
-  'admin@ticketcrm.com',
-  '$2b$12$K8HZU3GePdlALSj7D5pNZebkNdGU1XaFSFBGIHi3LdA3OxlkJaxjW',
-  'superadmin',
-  NULL,
-  1
-);
+-- INSERT IGNORE INTO users (name, email, password_hash, role, reporting_to, is_active)
+-- VALUES (
+--   'Super Admin',
+--   'admin@ticketcrm.com',
+--   '$2b$12$K8HZU3GePdlALSj7D5pNZebkNdGU1XaFSFBGIHi3LdA3OxlkJaxjW',
+--   'superadmin',
+--   NULL,
+--   1
+-- );
