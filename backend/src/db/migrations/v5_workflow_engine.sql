@@ -7,7 +7,7 @@ USE ticket_crm;
 
 -- 1. Table: workflow_rules
 -- Stores the blueprint of automation rules
-CREATE TABLE IF NOT EXISTS workflow_rules (
+CREATE TABLE  workflow_rules (
   id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   name         VARCHAR(200) NOT NULL,
   description  TEXT         NULL,
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS workflow_rules (
 
 -- 2. Table: workflow_runs
 -- Audit log for every time a workflow is executed
-CREATE TABLE IF NOT EXISTS workflow_runs (
+CREATE TABLE  workflow_runs (
   id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   rule_id      INT UNSIGNED NOT NULL,
   ticket_id    INT UNSIGNED NOT NULL,

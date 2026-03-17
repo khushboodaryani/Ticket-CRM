@@ -33,6 +33,8 @@ const allowedOrigins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8450",
+    "http://support.voicemeetme.net:8994",
+    "https://support.voicemeetme.net",
     process.env.FRONTEND_URL,
 ].filter(Boolean);
 

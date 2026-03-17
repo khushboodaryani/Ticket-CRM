@@ -1,6 +1,6 @@
 (function() {
     // 1. Configuration
-    const BACKEND_URL = 'http://localhost:8450';
+    const BACKEND_URL = 'https://support.voicemeetme.net';
     const WIDGET_ID = 'ticket-crm-chat-widget';
 
     // 2. Load Socket.io from CDN

@@ -4,7 +4,7 @@
 
 USE ticket_crm;
 
-CREATE TABLE IF NOT EXISTS sla_policies (
+CREATE TABLE sla_policies (
   id                   INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   priority             ENUM('P1', 'P2', 'P3', 'P4', 'P5') NOT NULL UNIQUE,
   resolution_time_hours DECIMAL(5,2) NOT NULL DEFAULT 2.00,
