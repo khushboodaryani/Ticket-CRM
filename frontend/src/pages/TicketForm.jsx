@@ -6,9 +6,9 @@ import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 
-const CATEGORIES = [
+const DEFAULT_CATEGORIES = [
     'Technical Issue', 'Billing', 'Feature Request', 'Complaint',
-    'Account', 'Network', 'Hardware', 'Software', 'Access', 'Other'
+    'Account', 'Network', 'Hardware', 'Software', 'Access'
 ]
 
 const PRIORITY_INFO = {
@@ -47,6 +47,11 @@ export default function TicketForm() {
     const [form, setForm] = useState({
         customer_id: '', project_id: '', category: '', priority: 'P3',
         description: '', source: 'manual', assigned_to: '', queue_id: ''
+    })
+    const [categories, setCategories] = useState(() => {
+        const saved = localStorage.getItem('custom_categories')
+        const custom = saved ? JSON.parse(saved) : []
+        return [...DEFAULT_CATEGORIES, ...custom, 'Other']
     })
     const [file, setFile] = useState(null)
     const [slaPolicies, setSlaPolicies] = useState([])
@@ -160,9 +165,33 @@ export default function TicketForm() {
                         <div className="form-grid" style={{ marginBottom: 16 }}>
                             <div className="form-group">
                                 <label className="form-label">Category <span>*</span></label>
-                                <select className="input" value={form.category} onChange={e => set('category', e.target.value)} required>
+                                <select className="input" value={form.category} 
+                                    onChange={e => {
+                                        const val = e.target.value;
+                                        if (val === 'Other') {
+                                            const newCat = window.prompt('Add new category:');
+                                            if (newCat && newCat.trim()) {
+                                                const trimmed = newCat.trim();
+                                                setCategories(prev => {
+                                                    if (!prev.includes(trimmed)) {
+                                                        const list = [...prev];
+                                                        list.splice(list.length - 1, 0, trimmed); // before 'Other'
+                                                        const customOnly = list.filter(c => !DEFAULT_CATEGORIES.includes(c) && c !== 'Other');
+                                                        localStorage.setItem('custom_categories', JSON.stringify(customOnly));
+                                                        return list;
+                                                    }
+                                                    return prev;
+                                                });
+                                                set('category', trimmed);
+                                            } else {
+                                                set('category', ''); // Reset on cancel
+                                            }
+                                        } else {
+                                            set('category', val);
+                                        }
+                                    }} required>
                                     <option value="">Select category…</option>
-                                    {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
                                 </select>
                             </div>
                             <div className="form-group">
