@@ -14,9 +14,11 @@ import fs from 'fs';
 const TZ = process.env.TIMEZONE || 'Asia/Kolkata';
 
 // In-memory state to avoid processing emails arrived before startup
-// Subtract 10 minutes buffer for clock-skew handling
 const StartupTimestamp = Date.now() - (10 * 60 * 1000); 
 const skippedUids = new Set();
+
+let activeConnection = null;
+let isProcessing = false;
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -32,47 +34,22 @@ function normalizeEmail(raw = '') {
 
 // ─── core logic ─────────────────────────────────────────────────────────────
 
-export async function processEmails() {
-    const gmailUser = process.env.GMAIL_USER;
-    const gmailPass = process.env.GMAIL_APP_PASSWORD;
-    const defaultProjectId = parseInt(process.env.EMAIL_DEFAULT_PROJECT_ID || '1', 10);
-    const defaultPriority = process.env.EMAIL_DEFAULT_PRIORITY || 'P3';
-    const systemUserId = parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10);
+export async function processEmails(connection) {
+    if (isProcessing) return;
+    isProcessing = true;
 
-    if (!gmailUser || !gmailPass) {
-        logger.warn('[EmailPoller] GMAIL_USER or GMAIL_APP_PASSWORD not set. Skipping poll.');
-        return;
-    }
-
-    const config = {
-        imap: {
-            user: gmailUser,
-            password: gmailPass,
-            host: 'imap.gmail.com',
-            port: 993,
-            tls: true,
-            tlsOptions: { rejectUnauthorized: false },
-            authTimeout: 10000,
-        },
-    };
-
-    let connection;
     try {
-        connection = await imapSimple.connect(config);
-        await connection.openBox('INBOX');
-
         // Fetch only UNSEEN emails from TODAY to avoid processing backlog older items
         const dateStr = moment().format('DD-MMM-YYYY');
         const searchCriteria = ['UNSEEN', ['SINCE', dateStr]];
         const fetchOptions = {
             bodies: ['HEADER', 'TEXT', ''],
-            markSeen: false, // we'll mark seen ourselves after processing
+            markSeen: false, 
         };
 
         const messages = await connection.search(searchCriteria, fetchOptions);
         if (!messages.length) {
-            logger.info('[EmailPoller] No new emails.');
-            connection.end();
+            isProcessing = false;
             return;
         }
 
@@ -82,18 +59,20 @@ export async function processEmails() {
 
         for (const msg of messages) {
             try {
-                await processOneEmail(pool, msg, connection, defaultProjectId, defaultPriority, systemUserId);
+                await processOneEmail(pool, msg, connection, 
+                    parseInt(process.env.EMAIL_DEFAULT_PROJECT_ID || '1', 10), 
+                    process.env.EMAIL_DEFAULT_PRIORITY || 'P3', 
+                    parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10)
+                );
             } catch (err) {
                 logger.error(`[EmailPoller] Failed to process one email: ${err.message}`);
             }
         }
 
-        connection.end();
     } catch (err) {
-        logger.error(`[EmailPoller] IMAP connection error: ${err.message}`);
-        if (connection) {
-            try { connection.end(); } catch (_) {}
-        }
+        logger.error(`[EmailPoller] Search error: ${err.message}`);
+    } finally {
+        isProcessing = false;
     }
 }
 
@@ -248,21 +227,59 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
 // ─── scheduler ───────────────────────────────────────────────────────────────
 
-export function startEmailPoller() {
-    const interval = process.env.EMAIL_POLL_INTERVAL || '*/2 * * * *';
+export async function startEmailPoller() {
     const gmailUser = process.env.GMAIL_USER;
+    const gmailPass = process.env.GMAIL_APP_PASSWORD;
 
-    if (!gmailUser) {
-        logger.warn('[EmailPoller] GMAIL_USER not set — Email Poller will NOT start.');
+    if (!gmailUser || !gmailPass) {
+        logger.warn('[EmailPoller] GMAIL_USER or GMAIL_APP_PASSWORD not set — Email Poller will NOT start.');
         return;
     }
 
-    logger.info(`[EmailPoller] Starting with cron: "${interval}" for ${gmailUser}`);
+    const config = {
+        imap: {
+            user: gmailUser,
+            password: gmailPass,
+            host: 'imap.gmail.com',
+            port: 993,
+            tls: true,
+            tlsOptions: { rejectUnauthorized: false },
+            authTimeout: 15000,
+        },
+        onmail: function (numNewMail) {
+            logger.info(`[EmailPoller] Instant New Mail Event triggers! Count: ${numNewMail}`);
+            if (activeConnection) {
+                processEmails(activeConnection);
+            }
+        }
+    };
 
-    // Run once immediately on startup
-    processEmails();
+    logger.info(`[EmailPoller] Connecting to IMAP server for ${gmailUser}...`);
 
-    cron.schedule(interval, () => {
-        processEmails();
-    });
+    try {
+        if (activeConnection) {
+            try { activeConnection.end(); } catch (_) {}
+        }
+
+        activeConnection = await imapSimple.connect(config);
+        await activeConnection.openBox('INBOX');
+        logger.info(`[EmailPoller] ✅ Continuous listening with IMAP IDLE enabled`);
+
+        // Run initial scan once connected
+        processEmails(activeConnection);
+
+        // Reconnection logic
+        activeConnection.imap.on('close', () => {
+            logger.warn('[EmailPoller] Connection closed. Restarting listener in 5s...');
+            setTimeout(startEmailPoller, 5000);
+        });
+
+        activeConnection.imap.on('error', (err) => {
+            logger.error(`[EmailPoller] Connection Error: ${err.message}`);
+        });
+
+    } catch (err) {
+        logger.error(`[EmailPoller] Initialization Failed: ${err.message}. Retrying in 10s...`);
+        setTimeout(startEmailPoller, 10000);
+    }
 }
