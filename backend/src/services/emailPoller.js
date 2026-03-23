@@ -9,8 +9,14 @@ import connectDB from '../db/index.js';
 import { logger } from '../logger.js';
 import moment from 'moment-timezone';
 import { sendTicketNotification } from '../modules/notifications/emailService.js';
+import fs from 'fs';
 
 const TZ = process.env.TIMEZONE || 'Asia/Kolkata';
+
+// In-memory state to avoid processing emails arrived before startup
+// Subtract 10 minutes buffer for clock-skew handling
+const StartupTimestamp = Date.now() - (10 * 60 * 1000); 
+const skippedUids = new Set();
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -97,6 +103,20 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     if (!allPart) return;
 
     const parsed = await simpleParser(allPart.body);
+    const msgUid = msg.attributes.uid;
+    const emailDate = parsed.date ? new Date(parsed.date).getTime() : 0;
+
+    // Skip if already marked to be skipped in this session
+    if (skippedUids.has(msgUid)) {
+        return; 
+    }
+
+    // Skip backlog emails arrived before server startup
+    if (emailDate < StartupTimestamp) {
+        logger.info(`[EmailPoller] Skipping backlog email (UID: ${msgUid}, Date: ${parsed.date})`);
+        skippedUids.add(msgUid);
+        return; // Returns without marking Seen, leaving it unread in inbox
+    }
 
     const fromRaw = parsed.from?.text || '';
     const senderEmail = normalizeEmail(fromRaw);
