@@ -252,7 +252,7 @@ export default function TicketDetail() {
                             </div>
 
                             {/* Description */}
-                            <div style={{ background: 'var(--bg-input)', borderRadius: 10, padding: '14px 16px', fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.7, border: '1px solid var(--border)' }}>
+                            <div style={{ background: 'var(--bg-input)', borderRadius: 10, padding: '14px 16px', fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.7, border: '1px solid var(--border)', whiteSpace: 'pre-wrap' }}>
                                 {ticket.description}
                             </div>
 
