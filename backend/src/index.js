@@ -14,6 +14,7 @@ import { startSLAEngine } from "./modules/sla/slaEngine.js";
 import { initWorkflowEngine } from "./modules/workflows/workflowEngine.js";
 import { logger } from "./logger.js";
 import { initSocket } from "./services/socketService.js";
+import { startEmailPoller } from "./services/emailPoller.js";
 
 // Verify necessary environment variables
 if (!process.env.PORT) {
@@ -67,6 +68,9 @@ const startServer = async () => {
 
         // Initialize Workflow Engine
         initWorkflowEngine();
+
+        // Start Email-to-Ticket Poller (modular — safe to skip if env vars missing)
+        startEmailPoller();
 
     } catch (error) {
         console.error("❌ Error starting server:", error);

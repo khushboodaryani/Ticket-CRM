@@ -1,5 +1,6 @@
 // modules/customers/customerController.js
 import connectDB from "../../db/index.js";
+import { generateCode } from "../../services/generateCode.js";
 
 // GET /api/customers
 export const getCustomers = async (req, res) => {
@@ -38,15 +39,19 @@ export const getCustomerById = async (req, res) => {
 
 // POST /api/customers
 export const createCustomer = async (req, res) => {
-    const { name, email, phone, customer_code, address } = req.body;
+    const { name, email, phone, address } = req.body; // Remove customer_code from body
     if (!name) return res.status(400).json({ success: false, message: "Customer name is required." });
     try {
         const pool = connectDB();
+        
+        // Auto-generate code with locking
+        const customer_code = await generateCode(pool, 'CUSTOMER');
+
         const [result] = await pool.query(
             `INSERT INTO customers (name, email, phone, customer_code, address) VALUES (?,?,?,?,?)`,
-            [name, email || null, phone || null, customer_code || null, address || null]
+            [name, email || null, phone || null, customer_code, address || null]
         );
-        return res.status(201).json({ success: true, message: "Customer created.", customerId: result.insertId });
+        return res.status(201).json({ success: true, message: "Customer created.", customerId: result.insertId, customerCode: customer_code });
     } catch (err) {
         console.error("createCustomer:", err);
         return res.status(500).json({ success: false, message: "Server error." });

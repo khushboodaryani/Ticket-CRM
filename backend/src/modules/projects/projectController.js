@@ -1,5 +1,6 @@
 // modules/projects/projectController.js
 import connectDB from "../../db/index.js";
+import { generateCode } from "../../services/generateCode.js";
 
 // GET /api/projects
 export const getProjects = async (req, res) => {
@@ -46,16 +47,20 @@ export const getProjectById = async (req, res) => {
 
 // POST /api/projects
 export const createProject = async (req, res) => {
-    const { customer_id, name, project_code, description } = req.body;
+    const { customer_id, name, description } = req.body; // Remove project_code from body
     if (!customer_id || !name)
         return res.status(400).json({ success: false, message: "customer_id and name are required." });
     try {
         const pool = connectDB();
+
+        // Auto-generate code with locking
+        const project_code = await generateCode(pool, 'PROJECT');
+
         const [result] = await pool.query(
             `INSERT INTO projects (customer_id, name, project_code, description) VALUES (?,?,?,?)`,
-            [customer_id, name, project_code || null, description || null]
+            [customer_id, name, project_code, description || null]
         );
-        return res.status(201).json({ success: true, message: "Project created.", projectId: result.insertId });
+        return res.status(201).json({ success: true, message: "Project created.", projectId: result.insertId, projectCode: project_code });
     } catch (err) {
         console.error("createProject:", err);
         return res.status(500).json({ success: false, message: "Server error." });

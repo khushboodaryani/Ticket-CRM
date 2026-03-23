@@ -19,6 +19,7 @@ frontend/dist/
 logs/
 *.log
 backend/logs/
+backend/scripts/*.txt
 
 # System files
 .DS_Store

@@ -82,15 +82,9 @@ export default function Customers() {
                             </button>
                         </div>
                         <form onSubmit={handleSave}>
-                            <div className="form-grid" style={{ marginBottom: 16 }}>
-                                <div className="form-group">
-                                    <label className="form-label">Company Name <span>*</span></label>
-                                    <input className="input" required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Acme Corp" />
-                                </div>
-                                <div className="form-group">
-                                    <label className="form-label">Customer Code</label>
-                                    <input className="input" value={form.customer_code} onChange={e => setForm(p => ({ ...p, customer_code: e.target.value }))} placeholder="CUST-001" />
-                                </div>
+                            <div className="form-group" style={{ marginBottom: 16 }}>
+                                <label className="form-label">Company Name <span>*</span></label>
+                                <input className="input" required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Acme Corp" />
                             </div>
                             <div className="form-grid" style={{ marginBottom: 16 }}>
                                 <div className="form-group">

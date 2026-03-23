@@ -98,10 +98,6 @@ export default function Projects() {
                                     <input className="input" required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Project Alpha" />
                                 </div>
                             </div>
-                            <div className="form-group" style={{ marginBottom: 16 }}>
-                                <label className="form-label">Project Code</label>
-                                <input className="input" value={form.project_code} onChange={e => setForm(p => ({ ...p, project_code: e.target.value }))} placeholder="PROJ-001" />
-                            </div>
                             <div className="form-group" style={{ marginBottom: 20 }}>
                                 <label className="form-label">Description</label>
                                 <textarea className="input" rows={3} value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} placeholder="Project details…" />
