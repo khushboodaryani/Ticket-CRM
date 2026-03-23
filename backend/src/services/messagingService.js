@@ -1,7 +1,9 @@
 // src/services/messagingService.js
 import { logger } from "../logger.js";
 import connectDB from "../db/index.js";
+import moment from 'moment-timezone';
 import * as widgetAdapter from "../modules/conversations/adapters/widgetAdapter.js";
+import * as emailAdapter from "../modules/conversations/adapters/emailAdapter.js";
 
 /**
  * Standardizes inbound messages from any channel into the CRM.
@@ -87,7 +89,7 @@ export const handleOutbound = async (conversationId, messageData) => {
     const pool = connectDB();
     try {
         const [conv] = await pool.query(
-            `SELECT t.source, t.id as ticket_id, c.metadata
+            `SELECT t.source, t.id as ticket_id
              FROM conversations c 
              JOIN tickets t ON c.ticket_id = t.id 
              WHERE c.id = ?`,
@@ -110,6 +112,19 @@ export const handleOutbound = async (conversationId, messageData) => {
                 );
                 if (cust.length) {
                     await widgetAdapter.send(cust[0].guest_id, messageData);
+                }
+                break;
+            case 'email':
+                // For email, send reply to customer's email address
+                const [emailCust] = await pool.query(
+                    "SELECT c.email FROM tickets t JOIN customers c ON t.customer_id = c.id WHERE t.id = ?",
+                    [conv[0].ticket_id]
+                );
+                if (emailCust.length && emailCust[0].email) {
+                    await emailAdapter.send(emailCust[0].email, {
+                        message: messageData.message,
+                        ticketId: conv[0].ticket_id
+                    });
                 }
                 break;
             default:

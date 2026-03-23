@@ -22,10 +22,15 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
         ? ticket.description.replace(/\n/g, '<br/>').replace(/\*/g, '')
         : '';
 
+    const messageId = `<${ticket.ticket_number}@ticketcrm.local>`;
+    
     const mailOptions = {
         from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
         subject: `[${ticket.ticket_number}] Ticket Created: ${ticket.category}`,
+        headers: {
+            'Message-ID': messageId,
+        },
         html: `
       <div style="font-family: sans-serif; padding: 20px; color: #333;">
         <h2 style="color: #4f8ef7;">Ticket Created Successfully</h2>

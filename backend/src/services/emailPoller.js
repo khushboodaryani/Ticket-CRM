@@ -111,6 +111,56 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
     logger.info(`[EmailPoller] Processing email from: ${senderEmail} | Subject: "${subject}"`);
 
+    // ── 0. Check if this is a reply to an existing ticket ────────────────────
+    const ticketNumberMatch = subject.match(/\[?(TKT-\d{8}-\d{4})\]?/i);
+    if (ticketNumberMatch) {
+        const ticketNumber = ticketNumberMatch[1].toUpperCase();
+        const [existingTickets] = await pool.query(
+            'SELECT id, customer_id FROM tickets WHERE ticket_number = ? LIMIT 1',
+            [ticketNumber]
+        );
+
+        if (existingTickets.length) {
+            const ticketId = existingTickets[0].id;
+            logger.info(`[EmailPoller] Reply detected for existing ticket ${ticketNumber}. Adding to conversation...`);
+
+            // Find or create conversation for this ticket
+            let [convos] = await pool.query(
+                'SELECT id FROM conversations WHERE ticket_id = ? AND source_channel = ? LIMIT 1',
+                [ticketId, 'email']
+            );
+
+            let conversationId;
+            if (convos.length) {
+                conversationId = convos[0].id;
+            } else {
+                const [newConvo] = await pool.query(
+                    'INSERT INTO conversations (ticket_id, source_channel, participant_identity) VALUES (?,?,?)',
+                    [ticketId, 'email', senderEmail]
+                );
+                conversationId = newConvo.insertId;
+            }
+
+            // Add message to conversation
+            await pool.query(
+                `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
+                 VALUES (?, 'customer', NULL, ?, NOW())`,
+                [conversationId, bodyText]
+            );
+
+            // Log activity
+            await pool.query(
+                `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?, 'comment', NULL, ?)`,
+                [ticketId, `Customer replied via email: ${senderEmail}`]
+            );
+
+            // Mark email as read
+            await connection.addFlags(msg.attributes.uid, ['\\Seen']);
+            logger.info(`[EmailPoller] ✅ Reply added to ticket ${ticketNumber}`);
+            return;
+        }
+    }
+
     // ── 1. Find or create customer by email ──────────────────────────────────
     let [customers] = await pool.query(
         'SELECT id FROM customers WHERE email = ? LIMIT 1',
@@ -214,9 +264,17 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     );
 
     // ── 8. Create conversation envelope ──────────────────────────────────────
-    await pool.query(
+    const [convoResult] = await pool.query(
         `INSERT INTO conversations (ticket_id, source_channel, participant_identity) VALUES (?,'email',?)`,
         [ticketId, senderEmail]
+    );
+    const conversationId = convoResult.insertId;
+
+    // ── 8b. Add initial email as first conversation message ──────────────────
+    await pool.query(
+        `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
+         VALUES (?, 'customer', NULL, ?, NOW())`,
+        [conversationId, bodyText]
     );
 
     // ── 9. Mark email as read ─────────────────────────────────────────────────

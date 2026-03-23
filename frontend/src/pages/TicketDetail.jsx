@@ -378,10 +378,16 @@ export default function TicketDetail() {
 
                                 {/* Compose */}
                                 <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)' }}>
+                                    {ticket.source === 'email' && !isInternal && (
+                                        <div style={{ padding: '8px 12px', marginBottom: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 12, color: '#1e40af', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            <span>📧</span>
+                                            <span>This reply will be sent via email to <strong>{ticket.customer_email || 'the customer'}</strong></span>
+                                        </div>
+                                    )}
                                     <form onSubmit={handleSendMessage} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                                         <textarea
                                             className="input"
-                                            placeholder={isInternal ? "✏️ Write an internal note (only visible to agents)…" : "💬 Write a reply to the customer…"}
+                                            placeholder={isInternal ? "✏️ Write an internal note (only visible to agents)…" : (ticket.source === 'email' ? "� Write an email reply to the customer…" : "�💬 Write a reply to the customer…")}
                                             rows={3}
                                             style={{ resize: 'none', fontSize: 13, border: isInternal ? '1.5px solid #f59e0b' : undefined }}
                                             value={messageBody}
@@ -396,7 +402,7 @@ export default function TicketDetail() {
                                             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Shift+Enter for new line</span>
                                                 <button className={isInternal ? "btn btn-sm" : "btn btn-primary btn-sm"} type="submit" disabled={sending || !messageBody.trim()} style={isInternal ? { background: '#f59e0b', color: '#fff', border: 'none' } : {}}>
-                                                    {sending ? 'Sending…' : (isInternal ? '📝 Add Note' : '➤ Send Reply')}
+                                                    {sending ? 'Sending…' : (isInternal ? '📝 Add Note' : (ticket.source === 'email' ? '📧 Send Email' : '➤ Send Reply'))}
                                                 </button>
                                             </div>
                                         </div>
