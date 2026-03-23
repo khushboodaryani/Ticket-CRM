@@ -18,6 +18,10 @@ const transporter = nodemailer.createTransport({
 export const sendTicketNotification = async (ticket, customerEmail) => {
     if (!customerEmail) return;
 
+    const formattedDescription = ticket.description
+        ? ticket.description.replace(/\n/g, '<br/>').replace(/\*/g, '')
+        : '';
+
     const mailOptions = {
         from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
@@ -26,14 +30,14 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
       <div style="font-family: sans-serif; padding: 20px; color: #333;">
         <h2 style="color: #4f8ef7;">Ticket Created Successfully</h2>
         <p>Hello,</p>
-        <p>Your ticket has been logged in our system. Our team will look into it shortly.</p>
+        <p>Your ticket has been created in our system. Our team will look into it shortly.</p>
         <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Ticket Number:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Priority:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.priority}</td></tr>
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Description:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.description}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; vertical-align: top;"><strong>Description:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee; white-space: pre-wrap; font-family: inherit;">${formattedDescription}</td></tr>
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>ETR (Estimated Resolution):</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.etr}</td></tr>
         </table>
-        <p>Regards,<br/>Ticket CRM Support Team</p>
+        <p>Regards,<br/>Team Multycomm</p>
       </div>
     `
     };
