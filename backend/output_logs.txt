@@ -1,0 +1,100 @@
+﻿[2026-03-24T10:47:11.379Z] INFO: [EmailPoller] Skipping backlog email (UID: 27988, Date: Tue Mar 24 2026 13:36:56 GMT+0530 (India Standard Time))
+[2026-03-24T10:47:11.380Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:47:11.393Z] INFO: [EmailPoller] Skipping backlog email (UID: 27989, Date: Tue Mar 24 2026 15:20:24 GMT+0530 (India Standard Time))
+[2026-03-24T10:47:29.144Z] INFO: ðŸ”Œ Socket disconnected: C6hLcDzzMqL03ZL7AAAD
+[2026-03-24T10:47:29.386Z] INFO: ðŸ”Œ New socket connection: ELymf7O6oaVrro2FAAAI
+[2026-03-24T10:47:29.401Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:48:03.027Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:48:03.028Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:48:03.038Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:49:01.916Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:49:01.917Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:49:01.924Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:49:32.366Z] INFO: [EmailPoller] Instant New Mail Event triggers! Count: 1
+[2026-03-24T10:49:34.028Z] INFO: [EmailPoller] Found 3 unread email(s). Processing...
+[2026-03-24T10:49:34.030Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:49:34.044Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:49:34.056Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27990
+[2026-03-24T10:49:34.061Z] INFO: [EmailPoller] Processing email from: daryanikhush@gmail.com | Subject: "Glitch"
+[2026-03-24T10:49:36.723Z] INFO: ðŸ”Œ Socket disconnected: ELymf7O6oaVrro2FAAAI
+[2026-03-24T10:49:36.884Z] INFO: ðŸ”Œ New socket connection: D1xKU6tm9_6FVRtQAAAL
+[2026-03-24T10:49:36.919Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:49:41.067Z] INFO: ðŸ“§ Notification email sent to daryanikhush@gmail.com for ticket TKT-20260324-0005
+[2026-03-24T10:49:41.089Z] INFO: [EmailPoller] Emitted real-time new_message for NEW ticket 150
+[2026-03-24T10:49:44.742Z] INFO: [EmailPoller] âœ… Ticket TKT-20260324-0005 (ID: 150) created from daryanikhush@gmail.com
+[2026-03-24T10:50:00.316Z] INFO: ðŸ“¤ Outbound reply to [email] for ticket 150
+[2026-03-24T10:50:00.418Z] INFO: [SLA Engine] Running check on 5 active tickets
+[2026-03-24T10:50:02.805Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:50:02.806Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:50:02.814Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:50:08.291Z] INFO: ðŸ“§ [EmailAdapter] Reply sent to daryanikhush@gmail.com for ticket TKT-20260324-0005
+[2026-03-24T10:50:50.287Z] INFO: ðŸ”Œ Socket disconnected: D1xKU6tm9_6FVRtQAAAL
+[2026-03-24T10:50:50.419Z] INFO: ðŸ”Œ New socket connection: nARx9zoqEpBYog_VAAAO
+[2026-03-24T10:50:50.438Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:51:01.857Z] INFO: [EmailPoller] Instant New Mail Event triggers! Count: 1
+[2026-03-24T10:51:01.863Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:51:01.863Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:51:01.873Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:51:11.605Z] INFO: ðŸ”Œ Socket disconnected: nARx9zoqEpBYog_VAAAO
+[2026-03-24T10:51:11.742Z] INFO: ðŸ”Œ New socket connection: Yt89DlFioO-vqr37AAAR
+[2026-03-24T10:51:11.756Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:51:30.475Z] INFO: ðŸ”Œ Socket disconnected: Yt89DlFioO-vqr37AAAR
+[2026-03-24T10:51:30.625Z] INFO: ðŸ”Œ New socket connection: sTYJ0OIBbKHGWdO-AAAU
+[2026-03-24T10:51:30.655Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:52:02.338Z] INFO: [EmailPoller] Found 3 unread email(s). Processing...
+[2026-03-24T10:52:02.338Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:52:02.345Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:52:02.355Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27991
+[2026-03-24T10:52:02.361Z] INFO: [EmailPoller] Processing email from: noreply@neucard.tataneu.com | Subject: "Expert Tips: Did You Know You Can Save on Gold & Silver Shopping?"
+[2026-03-24T10:52:02.391Z] INFO: [EmailPoller] Auto-created customer ID 49 for noreply@neucard.tataneu.com
+[2026-03-24T10:52:25.496Z] ERROR: âŒ Failed to send notification email: read ECONNRESET
+[2026-03-24T10:52:25.518Z] INFO: [EmailPoller] Emitted real-time new_message for NEW ticket 151
+[2026-03-24T10:52:26.699Z] INFO: [EmailPoller] âœ… Ticket TKT-20260324-0006 (ID: 151) created from noreply@neucard.tataneu.com
+[2026-03-24T10:53:02.037Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:53:02.038Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:53:02.055Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:54:01.632Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:54:01.633Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:54:01.638Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:54:35.547Z] INFO: ðŸš€ Ticket CRM Server running on http://localhost:8450
+[2026-03-24T10:54:35.560Z] INFO: ðŸ“‹ Environment: development
+[2026-03-24T10:54:35.575Z] INFO: [SLA Engine] Starting with cron: "*/5 * * * *"
+[2026-03-24T10:54:35.651Z] INFO: âš™ï¸ Workflow Engine Initialized.
+[2026-03-24T10:54:35.652Z] INFO: [EmailPoller] Connecting to IMAP server for khushboodaryani1@gmail.com...
+[2026-03-24T10:54:35.709Z] INFO: ðŸ”Œ New socket connection: GPbqRbUYd7xQt4FRAAAC
+[2026-03-24T10:54:35.716Z] INFO: ðŸ”Œ New socket connection: Dt9eTFOMgT62DH9aAAAD
+[2026-03-24T10:54:35.719Z] INFO: [SLA Engine] Running check on 6 active tickets
+[2026-03-24T10:54:35.729Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:54:35.734Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:54:35.791Z] INFO: ðŸ”Œ New socket connection: AHUXKXRSW8yPj6ClAAAF
+[2026-03-24T10:54:35.811Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:54:39.379Z] INFO: [EmailPoller] Instant New Mail Event triggers! Count: 20933
+[2026-03-24T10:54:39.381Z] INFO: [EmailPoller] âœ… Continuous listening with IMAP IDLE enabled
+[2026-03-24T10:54:40.612Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:54:40.613Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:54:40.630Z] INFO: [EmailPoller] Skipping backlog email (UID: 27988, Date: Tue Mar 24 2026 13:36:56 GMT+0530 (India Standard Time))
+[2026-03-24T10:54:40.630Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:54:40.647Z] INFO: [EmailPoller] Skipping backlog email (UID: 27989, Date: Tue Mar 24 2026 15:20:24 GMT+0530 (India Standard Time))
+[2026-03-24T10:54:53.089Z] INFO: ðŸš€ Ticket CRM Server running on http://localhost:8450
+[2026-03-24T10:54:53.098Z] INFO: ðŸ“‹ Environment: development
+[2026-03-24T10:54:53.103Z] INFO: [SLA Engine] Starting with cron: "*/5 * * * *"
+[2026-03-24T10:54:53.170Z] INFO: âš™ï¸ Workflow Engine Initialized.
+[2026-03-24T10:54:53.171Z] INFO: [EmailPoller] Connecting to IMAP server for khushboodaryani1@gmail.com...
+[2026-03-24T10:54:53.245Z] INFO: [SLA Engine] Running check on 6 active tickets
+[2026-03-24T10:54:53.257Z] INFO: ðŸ”Œ New socket connection: XyZovQhQ-Gngqa9QAAAC
+[2026-03-24T10:54:53.271Z] INFO: ðŸ”Œ New socket connection: BBJymPRCsrRV76T8AAAD
+[2026-03-24T10:54:53.292Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:54:53.312Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:54:53.783Z] INFO: ðŸ”Œ New socket connection: doLo8wAmKYiUrabJAAAF
+[2026-03-24T10:54:53.789Z] INFO: ðŸ‘¤ User 1 joined their notification room.
+[2026-03-24T10:54:56.950Z] INFO: [EmailPoller] Instant New Mail Event triggers! Count: 20933
+[2026-03-24T10:54:56.952Z] INFO: [EmailPoller] âœ… Continuous listening with IMAP IDLE enabled
+[2026-03-24T10:54:58.251Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:54:58.252Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:54:58.270Z] INFO: [EmailPoller] Skipping backlog email (UID: 27988, Date: Tue Mar 24 2026 13:36:56 GMT+0530 (India Standard Time))
+[2026-03-24T10:54:58.271Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989
+[2026-03-24T10:54:58.285Z] INFO: [EmailPoller] Skipping backlog email (UID: 27989, Date: Tue Mar 24 2026 15:20:24 GMT+0530 (India Standard Time))
+[2026-03-24T10:55:00.230Z] INFO: [SLA Engine] Running check on 6 active tickets
+[2026-03-24T10:55:02.443Z] INFO: [EmailPoller] Found 2 unread email(s). Processing...
+[2026-03-24T10:55:02.444Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27988
+[2026-03-24T10:55:02.450Z] INFO: [EmailPoller] processOneEmail triggered for UID: 27989

@@ -16,6 +16,60 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
+ * Generate HTML for previous conversation trail
+ */
+export const getConversationTrailHtml = async (pool, ticketId, excludeMessageId = 0) => {
+    try {
+        const [conversations] = await pool.query(
+            "SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1",
+            [ticketId]
+        );
+        
+        if (!conversations.length) return "";
+
+        const conversationId = conversations[0].id;
+        const queryArgs = [conversationId];
+        let queryStr = `
+            SELECT cm.*, u.name as sender_name 
+            FROM conversation_messages cm 
+            LEFT JOIN users u ON cm.sender_id = u.id 
+            WHERE cm.conversation_id = ? AND cm.is_internal_note = 0
+        `;
+        
+        if (excludeMessageId) {
+            queryStr += " AND cm.id != ?";
+            queryArgs.push(excludeMessageId);
+        }
+        
+        queryStr += " ORDER BY cm.created_at DESC LIMIT 5";
+
+        const [msgRows] = await pool.query(queryStr, queryArgs);
+
+        if (msgRows.length === 0) return "";
+
+        return `
+            <div style="margin-top: 30px; border-top: 2px solid #e2e8f0; padding-top: 15px;">
+                <p style="font-size: 13px; color: #666; font-weight: bold; margin-bottom: 12px;">--- Previous Conversation ---</p>
+                ${msgRows.map(msg => {
+                    const sender = msg.sender_type === 'agent' ? (msg.sender_name || 'Support Agent') : 'You';
+                    const date = new Date(msg.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+                    const body = (msg.message_body || '').replace(/\n/g, '<br/>');
+                    return `
+                        <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #f0f0f0;">
+                            <p style="font-size: 11px; color: #888; margin: 0;"><strong>${sender}</strong> - ${date}</p>
+                            <div style="font-size: 12px; margin: 4px 0 0 0; color: #444; line-height: 1.5;">${body}</div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+    } catch (e) {
+        logger.error(`[EmailAdapter] Trail Error: ${e.message}`);
+        return "";
+    }
+};
+
+/**
  * Send agent reply to customer via email
  * @param {string} customerEmail - Customer's email address
  * @param {object} data - { message: string, ticketNumber: string, ticketId: number }
@@ -57,54 +111,8 @@ export const send = async (customerEmail, data) => {
         const ticket = tickets[0];
         const formattedMessage = data.message.replace(/\n/g, '<br/>');
 
-        // Fetch previous messages for the trail (Disabled for now)
-        /*
-        const [conversations] = await pool.query(
-            "SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1",
-            [data.ticketId]
-        );
-        
-        let trailHtml = "";
-        if (conversations.length) {
-            const conversationId = conversations[0].id;
-            const queryArgs = [conversationId];
-            let queryStr = `
-                SELECT cm.*, u.name as sender_name 
-                FROM conversation_messages cm 
-                LEFT JOIN users u ON cm.sender_id = u.id 
-                WHERE cm.conversation_id = ? AND cm.is_internal_note = 0
-            `;
-            
-            if (data.messageId) {
-                queryStr += " AND cm.id != ?";
-                queryArgs.push(data.messageId);
-            }
-            
-            queryStr += " ORDER BY cm.created_at DESC LIMIT 5";
-
-            const [msgRows] = await pool.query(queryStr, queryArgs);
-
-            if (msgRows.length > 0) {
-                trailHtml = `
-                    <div style="margin-top: 30px; border-top: 2px solid #e2e8f0; padding-top: 15px;">
-                        <p style="font-size: 13px; color: #666; font-weight: bold; margin-bottom: 12px;">--- Previous Conversation ---</p>
-                        ${msgRows.map(msg => {
-                            const sender = msg.sender_type === 'agent' ? (msg.sender_name || 'Support Agent') : 'You';
-                            const date = new Date(msg.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-                            const body = msg.message_body.replace(/\n/g, '<br/>');
-                            return `
-                                <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #f0f0f0;">
-                                    <p style="font-size: 11px; color: #888; margin: 0;"><strong>${sender}</strong> - ${date}</p>
-                                    <div style="font-size: 12px; margin: 4px 0 0 0; color: #444; line-height: 1.5;">${body}</div>
-                                </div>
-                            `;
-                        }).join('')}
-                    </div>
-                `;
-            }
-        }
-        */
-        const trailHtml = ""; // Fallback
+        // Fetch previous messages for the trail
+        const trailHtml = await getConversationTrailHtml(pool, data.ticketId, data.messageId);
 
         // Email threading headers - reference the original ticket message
         const originalMessageId = `<${ticket.ticket_number}@ticketcrm.local>`;

@@ -1,6 +1,8 @@
 // modules/notifications/emailService.js
 import nodemailer from 'nodemailer';
 import { logger } from '../../logger.js';
+import connectDB from '../../db/index.js';
+import { getConversationTrailHtml } from '../conversations/adapters/emailAdapter.js';
 
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -52,5 +54,49 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
         logger.info(`📧 Notification email sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
     } catch (error) {
         logger.error(`❌ Failed to send notification email: ${error.message}`);
+    }
+};
+
+/**
+ * Send notification to customer about ticket status update
+ */
+export const sendTicketStatusNotification = async (ticket, customerEmail, newStatus) => {
+    if (!customerEmail) return;
+
+    const pool = connectDB();
+    const trailHtml = await getConversationTrailHtml(pool, ticket.id);
+
+    const statusLabel = newStatus.replace('_', ' ').toUpperCase();
+    const threadId = `<${ticket.ticket_number}@ticketcrm.local>`;
+
+    const mailOptions = {
+        from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
+        to: customerEmail,
+        subject: `[${ticket.ticket_number}] Status Update: ${ticket.category}`,
+        headers: {
+            'In-Reply-To': threadId,
+            'References': threadId,
+        },
+        html: `
+      <div style="font-family: sans-serif; padding: 20px; color: #333;">
+        <h2 style="color: #4f8ef7;">Ticket Status Updated</h2>
+        <p>Hello,</p>
+        <p>Your ticket **${ticket.ticket_number}** has been updated to <strong>${statusLabel}</strong>.</p>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Ticket Number:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Subject:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.category}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>New Status:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${statusLabel}</td></tr>
+        </table>
+        ${trailHtml}
+        <p>Regards,<br/>Team Multycomm</p>
+      </div>
+    `
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        logger.info(`📧 Status update email sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
+    } catch (error) {
+        logger.error(`❌ Failed to send status update email: ${error.message}`);
     }
 };

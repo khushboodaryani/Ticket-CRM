@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
+import { useSocket } from '../context/SocketContext'
 import toast from 'react-hot-toast'
 import CountdownBadge from '../components/Tickets/CountdownBadge'
 
@@ -48,6 +49,7 @@ function LevelBadge({ l }) { return <span className={`level-badge level-${l}`}>L
 
 export default function Tickets() {
     const { user } = useAuth()
+    const socket = useSocket()
     const [tickets, setTickets] = useState([])
     const [queues, setQueues] = useState([])
     const [loading, setLoading] = useState(true)
@@ -89,6 +91,19 @@ export default function Tickets() {
 
     useEffect(() => { fetchQueues() }, [])
     useEffect(() => { fetchTickets() }, [page, filters])
+    
+    useEffect(() => {
+        if (!socket) return;
+        const handleRefresh = () => { fetchTickets() }
+
+        socket.on('new_ticket', handleRefresh)
+        socket.on('new_message', handleRefresh)
+
+        return () => {
+            socket.off('new_ticket', handleRefresh)
+            socket.off('new_message', handleRefresh)
+        }
+    }, [socket])
 
     // Client-side filter for search + source
     const filtered = tickets.filter(t => {

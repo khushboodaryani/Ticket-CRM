@@ -88,24 +88,17 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     }
 
     const parsed = await simpleParser(allPart.body);
-    const emailDate = parsed.date ? new Date(parsed.date).getTime() : 0;
 
     // Skip if already marked to be skipped in this session
     if (skippedUids.has(msgUid)) {
         return; 
     }
 
-    // Skip backlog emails arrived before server startup
-    if (emailDate < StartupTimestamp) {
-        logger.info(`[EmailPoller] Skipping backlog email (UID: ${msgUid}, Date: ${parsed.date})`);
-        skippedUids.add(msgUid);
-        return; // Returns without marking Seen, leaving it unread in inbox
-    }
-
     const fromRaw = parsed.from?.text || '';
     const senderEmail = normalizeEmail(fromRaw);
     const senderName = parsed.from?.value?.[0]?.name || senderEmail;
     const subject = (parsed.subject || 'No Subject').trim().slice(0, 100);
+    const cleanSubject = subject.replace(/^(re|fwd|reply):\s*/i, '').replace(/\[?TKT-\d{8}-\d{4}\]?/i, '').trim();
     const bodyText = parsed.text ? parsed.text.trim() : (parsed.html ? stripHtml(parsed.html) : '');
     const description = bodyText.slice(0, 5000) || subject;
 
@@ -116,72 +109,90 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
     logger.info(`[EmailPoller] Processing email from: ${senderEmail} | Subject: "${subject}"`);
 
-    // ── 0. Check if this is a reply to an existing ticket ────────────────────
+    // ── 0. Helper: Append Reply to Existing Ticket ──────────────────────────
+    const appendReply = async (ticketId, ticketNumber) => {
+        // Find or create conversation for this ticket
+        let [convos] = await pool.query(
+            'SELECT id FROM conversations WHERE ticket_id = ? AND source_channel = ? LIMIT 1',
+            [ticketId, 'email']
+        );
+
+        let conversationId;
+        if (convos.length) {
+            conversationId = convos[0].id;
+        } else {
+            const [newConvo] = await pool.query(
+                'INSERT INTO conversations (ticket_id, source_channel, participant_identity) VALUES (?,?,?)',
+                [ticketId, 'email', senderEmail]
+            );
+            conversationId = newConvo.insertId;
+        }
+
+        // Add message to conversation
+        const [msgResult] = await pool.query(
+            `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
+             VALUES (?, 'customer', NULL, ?, NOW())`,
+            [conversationId, bodyText]
+        );
+        const newMessageId = msgResult.insertId;
+
+        // Emit Real-Time WebSocket trigger
+        try {
+            const { getIO } = await import('./socketService.js');
+            const io = getIO();
+            if (io) {
+                io.emit('new_message', {
+                    id: newMessageId,
+                    ticket_id: ticketId,
+                    conversation_id: conversationId,
+                    sender_type: 'customer',
+                    message_body: bodyText,
+                    created_at: new Date().toISOString()
+                });
+                logger.info(`[EmailPoller] Emitted real-time new_message for existing ticket ${ticketId}`);
+            }
+        } catch (socketErr) {
+            logger.warn(`[EmailPoller] Failed to emit WebSocket event: ${socketErr.message}`);
+        }
+
+        // Log activity
+        await pool.query(
+            `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?, 'comment', NULL, ?)`,
+            [ticketId, `Customer replied via email: ${senderEmail}`]
+        );
+
+        // Mark email as read
+        await connection.addFlags(msg.attributes.uid, ['\\Seen']);
+        logger.info(`[EmailPoller] ✅ Reply added to ticket ${ticketNumber}`);
+    };
+
+    // ── 0b. Detect Reply from Subject and Headers ──────────────────────────
+    let matchedTicketNumber = null;
+
+    // 1. Match from Subject
     const ticketNumberMatch = subject.match(/\[?(TKT-\d{8}-\d{4})\]?/i);
     if (ticketNumberMatch) {
-        const ticketNumber = ticketNumberMatch[1].toUpperCase();
+        matchedTicketNumber = ticketNumberMatch[1].toUpperCase();
+    } else {
+        // 2. Match from Headers (Fallback)
+        const replyTo = parsed.inReplyTo || '';
+        const refs = Array.isArray(parsed.references) ? parsed.references.join(' ') : (parsed.references || '');
+        const combined = `${replyTo} ${refs}`;
+        const headerMatch = combined.match(/<(TKT-\d{8}-\d{4})@ticketcrm\.local>/i);
+        if (headerMatch) {
+            matchedTicketNumber = headerMatch[1].toUpperCase();
+            logger.info(`[EmailPoller] ✅ Threading matched via header reference: ${matchedTicketNumber}`);
+        }
+    }
+
+    if (matchedTicketNumber) {
         const [existingTickets] = await pool.query(
             'SELECT id, customer_id FROM tickets WHERE ticket_number = ? LIMIT 1',
-            [ticketNumber]
+            [matchedTicketNumber]
         );
 
         if (existingTickets.length) {
-            const ticketId = existingTickets[0].id;
-            logger.info(`[EmailPoller] Reply detected for existing ticket ${ticketNumber}. Adding to conversation...`);
-
-            // Find or create conversation for this ticket
-            let [convos] = await pool.query(
-                'SELECT id FROM conversations WHERE ticket_id = ? AND source_channel = ? LIMIT 1',
-                [ticketId, 'email']
-            );
-
-            let conversationId;
-            if (convos.length) {
-                conversationId = convos[0].id;
-            } else {
-                const [newConvo] = await pool.query(
-                    'INSERT INTO conversations (ticket_id, source_channel, participant_identity) VALUES (?,?,?)',
-                    [ticketId, 'email', senderEmail]
-                );
-                conversationId = newConvo.insertId;
-            }
-
-            // Add message to conversation
-            const [msgResult] = await pool.query(
-                `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
-                 VALUES (?, 'customer', NULL, ?, NOW())`,
-                [conversationId, bodyText]
-            );
-            const newMessageId = msgResult.insertId;
-
-            // Emit Real-Time WebSocket trigger
-            try {
-                const { getIO } = await import('./socketService.js');
-                const io = getIO();
-                if (io) {
-                    io.emit('new_message', {
-                        id: newMessageId,
-                        ticket_id: ticketId,
-                        conversation_id: conversationId,
-                        sender_type: 'customer',
-                        message_body: bodyText,
-                        created_at: new Date().toISOString()
-                    });
-                    logger.info(`[EmailPoller] Emitted real-time new_message for existing ticket ${ticketId}`);
-                }
-            } catch (socketErr) {
-                logger.warn(`[EmailPoller] Failed to emit WebSocket event: ${socketErr.message}`);
-            }
-
-            // Log activity
-            await pool.query(
-                `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?, 'comment', NULL, ?)`,
-                [ticketId, `Customer replied via email: ${senderEmail}`]
-            );
-
-            // Mark email as read
-            await connection.addFlags(msg.attributes.uid, ['\\Seen']);
-            logger.info(`[EmailPoller] ✅ Reply added to ticket ${ticketNumber}`);
+            await appendReply(existingTickets[0].id, matchedTicketNumber);
             return;
         }
     }
@@ -203,6 +214,21 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         );
         customerId = result.insertId;
         logger.info(`[EmailPoller] Auto-created customer ID ${customerId} for ${senderEmail}`);
+    }
+
+    // ── 1b. Fallback: Check for Open Ticket with Same Subject ───────────────
+
+    const [openTickets] = await pool.query(
+        `SELECT id, ticket_number FROM tickets 
+         WHERE customer_id = ? AND category = ? AND status NOT IN ('closed', 'resolved') 
+         ORDER BY created_at DESC LIMIT 1`,
+        [customerId, cleanSubject]
+    );
+
+    if (openTickets.length) {
+        logger.info(`[EmailPoller] Subject Match: Appending to open ticket ${openTickets[0].ticket_number}`);
+        await appendReply(openTickets[0].id, openTickets[0].ticket_number);
+        return;
     }
 
     // ── 2. Ensure a valid project exists for this customer ───────────────────
@@ -232,10 +258,10 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         `SELECT id FROM tickets
          WHERE customer_id = ? AND category = ? AND description = ? AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
          LIMIT 1`,
-        [customerId, subject, description]
+        [customerId, cleanSubject, description]
     );
     if (dupes.length) {
-        logger.warn(`[EmailPoller] Skipping duplicate ticket for "${subject}" from ${senderEmail}`);
+        logger.warn(`[EmailPoller] Skipping duplicate ticket for "${cleanSubject}" from ${senderEmail}`);
         // Still mark as read so we don't re-process
         await connection.addFlags(msg.attributes.uid, ['\\Seen']);
         return;
@@ -263,7 +289,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description,
          attachment_url, status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, queue_id)
          VALUES (?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, ?, ?, ?)`,
-        [ticketNumber, customerId, projectId, subject, defaultPriority, description,
+        [ticketNumber, customerId, projectId, cleanSubject, defaultPriority, description,
          null, now, etr, systemUserId, null, 'email', null]
     );
     const ticketId = result.insertId;
@@ -272,7 +298,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     try {
         const ticketObj = {
             ticket_number: ticketNumber,
-            category: subject,
+            category: cleanSubject,
             priority: defaultPriority,
             description: description,
             etr: etr

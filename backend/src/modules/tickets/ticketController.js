@@ -1,7 +1,7 @@
 // modules/tickets/ticketController.js
 import connectDB from "../../db/index.js";
 import moment from "moment-timezone";
-import { sendTicketNotification } from "../notifications/emailService.js";
+import { sendTicketNotification, sendTicketStatusNotification } from "../notifications/emailService.js";
 import { createNotification } from "../notifications/notificationController.js";
 import { workflowEvents } from "../workflows/workflowEngine.js";
 import { logger } from "../../logger.js";
@@ -232,7 +232,12 @@ export const updateTicket = async (req, res) => {
     const { category, priority, description, status, assigned_to } = req.body;
     try {
         const pool = connectDB();
-        const [existing] = await pool.query(`SELECT * FROM tickets WHERE id=?`, [req.params.id]);
+        const [existing] = await pool.query(
+            `SELECT t.*, c.email as customer_email FROM tickets t 
+             LEFT JOIN customers c ON t.customer_id = c.id 
+             WHERE t.id=?`, 
+            [req.params.id]
+        );
         if (!existing.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
         const updates = [];
@@ -281,6 +286,12 @@ export const updateTicket = async (req, res) => {
                 ticketId: req.params.id,
                 payload: { old_status: existing[0].status, new_status: status }
             });
+
+            if (existing[0].customer_email) {
+                // Async send status notification
+                const ticketObj = { ...existing[0], category: category || existing[0].category };
+                sendTicketStatusNotification(ticketObj, existing[0].customer_email, status).catch(e => logger.error(`Status Email Fail: ${e.message}`));
+            }
         }
 
         return res.json({ success: true, message: "Ticket updated." });
@@ -682,8 +693,25 @@ export const bulkUpdateTickets = async (req, res) => {
 
         updates.push("updated_at=NOW()");
         const placeholders = ids.map(() => "?").join(",");
+        
+        // Fetch ticket details for notification before updating
+        const [rows] = await pool.query(
+            `SELECT t.id, t.ticket_number, t.category, c.email as customer_email 
+             FROM tickets t LEFT JOIN customers c ON t.customer_id = c.id 
+             WHERE t.id IN (${placeholders})`, 
+            ids
+        );
+
         vals.push(...ids);
         await pool.query(`UPDATE tickets SET ${updates.join(",")} WHERE id IN (${placeholders})`, vals);
+
+        if (status) {
+            for (const r of rows) {
+                if (r.customer_email) {
+                    sendTicketStatusNotification(r, r.customer_email, status).catch(e => logger.error(`Bulk Status Email Fail: ${e.message}`));
+                }
+            }
+        }
 
         return res.json({ success: true, message: `${ids.length} ticket(s) updated.`, updated: ids.length });
     } catch (err) {
