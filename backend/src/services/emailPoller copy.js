@@ -1,6 +1,6 @@
 // src/services/emailPoller.js
 // Polls Gmail via IMAP and auto-creates tickets from unread emails.
-// Fully modular â€” does NOT modify any existing controller or route.
+// Fully modular — does NOT modify any existing controller or route.
 
 import imapSimple from 'imap-simple';
 import { simpleParser } from 'mailparser';
@@ -20,7 +20,7 @@ const skippedUids = new Set();
 let activeConnection = null;
 let isProcessing = false;
 
-// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── helpers ────────────────────────────────────────────────────────────────
 
 function stripHtml(html = '') {
     return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -32,7 +32,7 @@ function normalizeEmail(raw = '') {
     return (match ? match[1] : raw).trim().toLowerCase();
 }
 
-// â”€â”€â”€ core logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── core logic ─────────────────────────────────────────────────────────────
 
 export async function processEmails(connection) {
     if (isProcessing) return;
@@ -116,7 +116,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
     logger.info(`[EmailPoller] Processing email from: ${senderEmail} | Subject: "${subject}"`);
 
-    // â”€â”€ 0. Check if this is a reply to an existing ticket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 0. Check if this is a reply to an existing ticket ────────────────────
     const ticketNumberMatch = subject.match(/\[?(TKT-\d{8}-\d{4})\]?/i);
     if (ticketNumberMatch) {
         const ticketNumber = ticketNumberMatch[1].toUpperCase();
@@ -152,26 +152,6 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                  VALUES (?, 'customer', NULL, ?, NOW())`,
                 [conversationId, bodyText]
             );
-            const newMessageId = msgResult.insertId;
-
-            // Emit Real-Time WebSocket trigger
-            try {
-                const { getIO } = await import('./socketService.js');
-                const io = getIO();
-                if (io) {
-                    io.emit('new_message', {
-                        id: newMessageId,
-                        ticket_id: ticketId,
-                        conversation_id: conversationId,
-                        sender_type: 'customer',
-                        message_body: bodyText,
-                        created_at: new Date().toISOString()
-                    });
-                    logger.info(`[EmailPoller] Emitted real-time new_message for existing ticket ${ticketId}`);
-                }
-            } catch (socketErr) {
-                logger.warn(`[EmailPoller] Failed to emit WebSocket event: ${socketErr.message}`);
-            }
 
             // Log activity
             await pool.query(
@@ -181,12 +161,12 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
             // Mark email as read
             await connection.addFlags(msg.attributes.uid, ['\\Seen']);
-            logger.info(`[EmailPoller] âœ… Reply added to ticket ${ticketNumber}`);
+            logger.info(`[EmailPoller] ✅ Reply added to ticket ${ticketNumber}`);
             return;
         }
     }
 
-    // â”€â”€ 1. Find or create customer by email â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 1. Find or create customer by email ──────────────────────────────────
     let [customers] = await pool.query(
         'SELECT id FROM customers WHERE email = ? LIMIT 1',
         [senderEmail]
@@ -205,7 +185,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         logger.info(`[EmailPoller] Auto-created customer ID ${customerId} for ${senderEmail}`);
     }
 
-    // â”€â”€ 2. Ensure a valid project exists for this customer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 2. Ensure a valid project exists for this customer ───────────────────
     let [projects] = await pool.query(
         'SELECT id FROM projects WHERE customer_id = ? LIMIT 1',
         [customerId]
@@ -227,7 +207,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         projectId = defaultProjectId;
     }
 
-    // â”€â”€ 3. Duplicate guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 3. Duplicate guard ──────────────────────────────────────────────────
     const [dupes] = await pool.query(
         `SELECT id FROM tickets
          WHERE customer_id = ? AND category = ? AND description = ? AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
@@ -241,7 +221,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         return;
     }
 
-    // â”€â”€ 4. Build ticket number â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 4. Build ticket number ───────────────────────────────────────────────
     const now = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
     const today = moment().tz(TZ).format('YYYYMMDD');
     const [countRow] = await pool.query(
@@ -250,7 +230,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     const seq = String(countRow[0].cnt + 1).padStart(4, '0');
     const ticketNumber = `TKT-${today}-${seq}`;
 
-    // â”€â”€ 5. Fetch SLA ETR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 5. Fetch SLA ETR ─────────────────────────────────────────────────────
     const [policies] = await pool.query(
         'SELECT resolution_time_hours FROM sla_policies WHERE priority = ?',
         [defaultPriority]
@@ -258,7 +238,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     const resHours = policies[0]?.resolution_time_hours || 2;
     const etr = moment().tz(TZ).add(resHours, 'hours').format('YYYY-MM-DD HH:mm:ss');
 
-    // â”€â”€ 6. Insert ticket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 6. Insert ticket ─────────────────────────────────────────────────────
     const [result] = await pool.query(
         `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description,
          attachment_url, status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, queue_id)
@@ -268,7 +248,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     );
     const ticketId = result.insertId;
 
-    // â”€â”€ 7. Send Notification email back to sender â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 7. Send Notification email back to sender ─────────────────────────────
     try {
         const ticketObj = {
             ticket_number: ticketNumber,
@@ -282,58 +262,40 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         logger.error(`[EmailPoller] Outbound notification failed: ${notifierErr.message}`);
     }
 
-    // â”€â”€ 7. Log activity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 7. Log activity ──────────────────────────────────────────────────────
     await pool.query(
         `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'created',NULL,?)`,
         [ticketId, `Auto-created from email: ${senderEmail}`]
     );
 
-    // â”€â”€ 8. Create conversation envelope â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 8. Create conversation envelope ──────────────────────────────────────
     const [convoResult] = await pool.query(
         `INSERT INTO conversations (ticket_id, source_channel, participant_identity) VALUES (?,'email',?)`,
         [ticketId, senderEmail]
     );
     const conversationId = convoResult.insertId;
 
-    // â”€â”€ 8b. Add initial email as first conversation message â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    const [msgResult2] = await pool.query(
+    // ── 8b. Add initial email as first conversation message ──────────────────
+    await pool.query(
         `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
          VALUES (?, 'customer', NULL, ?, NOW())`,
         [conversationId, bodyText]
     );
-    const newMessageId2 = msgResult2.insertId;
 
-    // Emit Real-Time WebSocket trigger
-    try {
-        const { getIO } = await import('./socketService.js');
-        const io = getIO();
-        if (io) {
-            io.emit('new_message', {
-                id: newMessageId2,
-                ticket_id: ticketId,
-                conversation_id: conversationId,
-                sender_type: 'customer',
-                message_body: bodyText,
-                created_at: new Date().toISOString()
-            });
-            logger.info(`[EmailPoller] Emitted real-time new_message for NEW ticket ${ticketId}`);
-        }
-    } catch (_) {}
-
-    // â”€â”€ 9. Mark email as read â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── 9. Mark email as read ─────────────────────────────────────────────────
     await connection.addFlags(msg.attributes.uid, ['\\Seen']);
 
-    logger.info(`[EmailPoller] âœ… Ticket ${ticketNumber} (ID: ${ticketId}) created from ${senderEmail}`);
+    logger.info(`[EmailPoller] ✅ Ticket ${ticketNumber} (ID: ${ticketId}) created from ${senderEmail}`);
 }
 
-// â”€â”€â”€ scheduler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── scheduler ───────────────────────────────────────────────────────────────
 
 export async function startEmailPoller() {
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = process.env.GMAIL_APP_PASSWORD;
 
     if (!gmailUser || !gmailPass) {
-        logger.warn('[EmailPoller] GMAIL_USER or GMAIL_APP_PASSWORD not set â€” Email Poller will NOT start.');
+        logger.warn('[EmailPoller] GMAIL_USER or GMAIL_APP_PASSWORD not set — Email Poller will NOT start.');
         return;
     }
 
@@ -364,7 +326,7 @@ export async function startEmailPoller() {
 
         activeConnection = await imapSimple.connect(config);
         await activeConnection.openBox('INBOX');
-        logger.info(`[EmailPoller] âœ… Continuous listening with IMAP IDLE enabled`);
+        logger.info(`[EmailPoller] ✅ Continuous listening with IMAP IDLE enabled`);
 
         // Backup Cron: runs every 1 minute to catch emails if IMAP IDLE falls asleep
         cron.schedule('*/1 * * * *', () => {
