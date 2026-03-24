@@ -77,12 +77,17 @@ export async function processEmails(connection) {
 }
 
 async function processOneEmail(pool, msg, connection, defaultProjectId, defaultPriority, systemUserId) {
+    const msgUid = msg.attributes.uid;
+    logger.info(`[EmailPoller] processOneEmail triggered for UID: ${msgUid}`);
+
     // Get the full raw email to parse
     const allPart = msg.parts.find(p => p.which === '');
-    if (!allPart) return;
+    if (!allPart) {
+        logger.warn(`[EmailPoller] Missing body part ('' which) for UID: ${msgUid}. Available parts: ${msg.parts.map(p => p.which).join(', ')}`);
+        return;
+    }
 
     const parsed = await simpleParser(allPart.body);
-    const msgUid = msg.attributes.uid;
     const emailDate = parsed.date ? new Date(parsed.date).getTime() : 0;
 
     // Skip if already marked to be skipped in this session
@@ -142,11 +147,31 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             }
 
             // Add message to conversation
-            await pool.query(
+            const [msgResult] = await pool.query(
                 `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
                  VALUES (?, 'customer', NULL, ?, NOW())`,
                 [conversationId, bodyText]
             );
+            const newMessageId = msgResult.insertId;
+
+            // Emit Real-Time WebSocket trigger
+            try {
+                const { getIO } = await import('./socketService.js');
+                const io = getIO();
+                if (io) {
+                    io.emit('new_message', {
+                        id: newMessageId,
+                        ticket_id: ticketId,
+                        conversation_id: conversationId,
+                        sender_type: 'customer',
+                        message_body: bodyText,
+                        created_at: new Date().toISOString()
+                    });
+                    logger.info(`[EmailPoller] Emitted real-time new_message for existing ticket ${ticketId}`);
+                }
+            } catch (socketErr) {
+                logger.warn(`[EmailPoller] Failed to emit WebSocket event: ${socketErr.message}`);
+            }
 
             // Log activity
             await pool.query(
@@ -202,12 +227,12 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         projectId = defaultProjectId;
     }
 
-    // ── 3. Duplicate guard — same sender + same subject in last 10 minutes ───
+    // ── 3. Duplicate guard ──────────────────────────────────────────────────
     const [dupes] = await pool.query(
         `SELECT id FROM tickets
-         WHERE customer_id = ? AND category = ? AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+         WHERE customer_id = ? AND category = ? AND description = ? AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
          LIMIT 1`,
-        [customerId, subject]
+        [customerId, subject, description]
     );
     if (dupes.length) {
         logger.warn(`[EmailPoller] Skipping duplicate ticket for "${subject}" from ${senderEmail}`);
@@ -271,11 +296,29 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     const conversationId = convoResult.insertId;
 
     // ── 8b. Add initial email as first conversation message ──────────────────
-    await pool.query(
+    const [msgResult2] = await pool.query(
         `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
          VALUES (?, 'customer', NULL, ?, NOW())`,
         [conversationId, bodyText]
     );
+    const newMessageId2 = msgResult2.insertId;
+
+    // Emit Real-Time WebSocket trigger
+    try {
+        const { getIO } = await import('./socketService.js');
+        const io = getIO();
+        if (io) {
+            io.emit('new_message', {
+                id: newMessageId2,
+                ticket_id: ticketId,
+                conversation_id: conversationId,
+                sender_type: 'customer',
+                message_body: bodyText,
+                created_at: new Date().toISOString()
+            });
+            logger.info(`[EmailPoller] Emitted real-time new_message for NEW ticket ${ticketId}`);
+        }
+    } catch (_) {}
 
     // ── 9. Mark email as read ─────────────────────────────────────────────────
     await connection.addFlags(msg.attributes.uid, ['\\Seen']);
@@ -322,6 +365,14 @@ export async function startEmailPoller() {
         activeConnection = await imapSimple.connect(config);
         await activeConnection.openBox('INBOX');
         logger.info(`[EmailPoller] ✅ Continuous listening with IMAP IDLE enabled`);
+
+        // Backup Cron: runs every 1 minute to catch emails if IMAP IDLE falls asleep
+        cron.schedule('*/1 * * * *', () => {
+            if (activeConnection && !isProcessing) {
+                logger.debug('[EmailPoller] Scheduled fallback trigger scan processing...');
+                processEmails(activeConnection);
+            }
+        });
 
         // Run initial scan once connected
         processEmails(activeConnection);

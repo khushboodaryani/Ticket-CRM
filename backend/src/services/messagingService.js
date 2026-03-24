@@ -123,7 +123,9 @@ export const handleOutbound = async (conversationId, messageData) => {
                 if (emailCust.length && emailCust[0].email) {
                     await emailAdapter.send(emailCust[0].email, {
                         message: messageData.message,
-                        ticketId: conv[0].ticket_id
+                        ticketId: conv[0].ticket_id,
+                        senderId: messageData.senderId,
+                        messageId: messageData.messageId
                     });
                 }
                 break;

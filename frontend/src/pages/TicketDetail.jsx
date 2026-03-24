@@ -350,6 +350,11 @@ export default function TicketDetail() {
                                             <div key={m.id} style={{ maxWidth: '82%', alignSelf: isAgent ? 'flex-end' : 'flex-start', display: 'flex', flexDirection: 'column', alignItems: isAgent ? 'flex-end' : 'flex-start' }}>
                                                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, padding: '0 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
                                                     <span style={{ fontWeight: 600 }}>{m.sender_name || 'Customer'}</span>
+                                                    {m.sender_role && (
+                                                        <span style={{ fontSize: 10, background: 'rgba(59,130,246,0.1)', color: 'var(--accent)', padding: '2px 6px', borderRadius: 4, fontWeight: 600, letterSpacing: 0.3 }}>
+                                                            {m.sender_role.replace(/_/g, ' ').toUpperCase()}
+                                                        </span>
+                                                    )}
                                                     <span>·</span>
                                                     <span>{new Date(m.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
                                                     {m.is_internal_note ? <span style={{ background: '#fef3c7', color: '#b45309', fontSize: 10, padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>INTERNAL</span> : ''}

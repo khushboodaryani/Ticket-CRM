@@ -15,7 +15,7 @@ export const getUsers = async (req, res) => {
         if (is_active !== undefined) { where += " AND u.is_active = ?"; params.push(is_active === "true" ? 1 : 0); }
 
         const [rows] = await pool.query(
-            `SELECT u.id, u.name, u.email, u.role, u.is_active, u.created_at,
+            `SELECT u.id, u.name, u.email, u.role, u.is_active, u.created_at, u.signature,
               r.id as reporting_to_id, r.name as reporting_to_name
        FROM users u
        LEFT JOIN users r ON u.reporting_to = r.id
@@ -35,7 +35,7 @@ export const getUserById = async (req, res) => {
     try {
         const pool = connectDB();
         const [rows] = await pool.query(
-            `SELECT u.id, u.name, u.email, u.role, u.is_active, u.created_at,
+            `SELECT u.id, u.name, u.email, u.role, u.is_active, u.created_at, u.signature,
               r.id as reporting_to_id, r.name as reporting_to_name
        FROM users u
        LEFT JOIN users r ON u.reporting_to = r.id
@@ -55,7 +55,7 @@ export const createUser = async (req, res) => {
     if (req.user.role !== 'superadmin')
         return res.status(403).json({ success: false, message: 'Only superadmin can create users.' });
 
-    const { name, email, password, role, reporting_to } = req.body;
+    const { name, email, password, role, reporting_to, signature } = req.body;
     if (!name || !email || !password || !role)
         return res.status(400).json({ success: false, message: 'name, email, password, role are required.' });
     if (!VALID_ROLES.includes(role))
@@ -68,8 +68,8 @@ export const createUser = async (req, res) => {
 
         const hash = await bcrypt.hash(password, 12);
         const [result] = await pool.query(
-            `INSERT INTO users (name, email, password_hash, role, reporting_to, is_active) VALUES (?,?,?,?,?,1)`,
-            [name, email, hash, role, reporting_to || null]
+            `INSERT INTO users (name, email, password_hash, role, reporting_to, is_active, signature) VALUES (?,?,?,?,?,1,?)`,
+            [name, email, hash, role, reporting_to || null, signature || null]
         );
         return res.status(201).json({ success: true, message: 'User created.', userId: result.insertId });
     } catch (err) {
@@ -80,7 +80,7 @@ export const createUser = async (req, res) => {
 
 // PUT /api/users/:id
 export const updateUser = async (req, res) => {
-    const { name, email, role, reporting_to, is_active, password } = req.body;
+    const { name, email, role, reporting_to, is_active, password, signature } = req.body;
     try {
         const pool = connectDB();
         const [existing] = await pool.query(`SELECT id FROM users WHERE id = ?`, [req.params.id]);
@@ -90,6 +90,7 @@ export const updateUser = async (req, res) => {
         const vals = [];
         if (name) { updates.push('name=?'); vals.push(name); }
         if (email) { updates.push('email=?'); vals.push(email); }
+        if (signature !== undefined) { updates.push('signature=?'); vals.push(signature); }
 
         if (role && VALID_ROLES.includes(role)) {
             if (req.user.role !== 'superadmin')

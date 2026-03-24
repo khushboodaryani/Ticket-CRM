@@ -45,7 +45,7 @@ export const getConversation = async (req, res) => {
         const conversation = await getOrCreateConversation(pool, ticketId);
 
         const [messages] = await pool.query(
-            `SELECT cm.*, u.name as sender_name
+            `SELECT cm.*, u.name as sender_name, u.role as sender_role
              FROM conversation_messages cm
              LEFT JOIN users u ON cm.sender_id = u.id
              WHERE cm.conversation_id=?
@@ -99,6 +99,7 @@ export const addMessage = async (req, res) => {
             sender_id: req.user.userId,
             sender_name: req.user.name,
             sender_type: 'agent',
+            sender_role: req.user.role,
             message_body: message_body.trim(),
             is_internal_note: isInternal,
             created_at: new Date()
@@ -107,7 +108,11 @@ export const addMessage = async (req, res) => {
         // Trigger Outbound Channel Adapter if not internal
         if (!isInternal) {
             import("../../services/messagingService.js").then(m => {
-                m.handleOutbound(conversation.id, { message: message_body.trim() });
+                m.handleOutbound(conversation.id, { 
+                    message: message_body.trim(),
+                    senderId: req.user.userId,
+                    messageId: messageId
+                });
             }).catch(e => console.error("Outbound trigger failed:", e));
         }
 
