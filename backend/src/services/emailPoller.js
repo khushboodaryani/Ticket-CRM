@@ -152,26 +152,6 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                  VALUES (?, 'customer', NULL, ?, NOW())`,
                 [conversationId, bodyText]
             );
-            const newMessageId = msgResult.insertId;
-
-            // Emit Real-Time WebSocket trigger
-            try {
-                const { getIO } = await import('./socketService.js');
-                const io = getIO();
-                if (io) {
-                    io.emit('new_message', {
-                        id: newMessageId,
-                        ticket_id: ticketId,
-                        conversation_id: conversationId,
-                        sender_type: 'customer',
-                        message_body: bodyText,
-                        created_at: new Date().toISOString()
-                    });
-                    logger.info(`[EmailPoller] Emitted real-time new_message for existing ticket ${ticketId}`);
-                }
-            } catch (socketErr) {
-                logger.warn(`[EmailPoller] Failed to emit WebSocket event: ${socketErr.message}`);
-            }
 
             // Log activity
             await pool.query(
@@ -296,29 +276,11 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     const conversationId = convoResult.insertId;
 
     // ── 8b. Add initial email as first conversation message ──────────────────
-    const [msgResult2] = await pool.query(
+    await pool.query(
         `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
          VALUES (?, 'customer', NULL, ?, NOW())`,
         [conversationId, bodyText]
     );
-    const newMessageId2 = msgResult2.insertId;
-
-    // Emit Real-Time WebSocket trigger
-    try {
-        const { getIO } = await import('./socketService.js');
-        const io = getIO();
-        if (io) {
-            io.emit('new_message', {
-                id: newMessageId2,
-                ticket_id: ticketId,
-                conversation_id: conversationId,
-                sender_type: 'customer',
-                message_body: bodyText,
-                created_at: new Date().toISOString()
-            });
-            logger.info(`[EmailPoller] Emitted real-time new_message for NEW ticket ${ticketId}`);
-        }
-    } catch (_) {}
 
     // ── 9. Mark email as read ─────────────────────────────────────────────────
     await connection.addFlags(msg.attributes.uid, ['\\Seen']);

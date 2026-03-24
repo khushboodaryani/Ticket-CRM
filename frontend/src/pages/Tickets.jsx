@@ -303,7 +303,6 @@ export default function Tickets() {
                                         </td>
                                         <td>
                                             <div style={{ fontWeight: 600, fontSize: 13 }}>{t.customer_name}</div>
-                                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t.project_name}</div>
                                         </td>
                                         <td>{t.category}</td>
                                         <td><SourceBadge s={t.source || 'manual'} /></td>
