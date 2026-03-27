@@ -28,7 +28,7 @@ export default function TicketDetail() {
     const { id } = useParams()
     const navigate = useNavigate()
     const { user } = useAuth()
-    const socket = useSocket()
+    const { socket } = useSocket() || {}
     const chatEndRef = useRef(null)
 
     const [ticket, setTicket] = useState(null)

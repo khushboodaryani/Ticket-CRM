@@ -8,7 +8,7 @@ import cron from 'node-cron';
 import connectDB from '../db/index.js';
 import { logger } from '../logger.js';
 import moment from 'moment-timezone';
-import { sendTicketNotification } from '../modules/notifications/emailService.js';
+import { sendTicketNotification, sendEmergencyBroadcast } from '../modules/notifications/emailService.js';
 import fs from 'fs';
 
 const TZ = process.env.TIMEZONE || 'Asia/Kolkata';
@@ -276,10 +276,21 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     const seq = String(countRow[0].cnt + 1).padStart(4, '0');
     const ticketNumber = `TKT-${today}-${seq}`;
 
+    // ── 4b. Dynamic Priority Parsing (Emergency Check) ───────────────
+    let finalPriority = defaultPriority;
+    const emergencyKeywords = ['server down', 'emergency', 'outage', 'critical', 'urgent', 'crashed'];
+    const lowerSub = subject.toLowerCase();
+    const lowerBody = bodyText.toLowerCase();
+    
+    if (emergencyKeywords.some(kw => lowerSub.includes(kw) || lowerBody.includes(kw))) {
+        finalPriority = 'P1';
+        logger.warn(`[EmailPoller] 🚨 Emergency keyword detected! Overriding priority to P1`);
+    }
+
     // ── 5. Fetch SLA ETR ─────────────────────────────────────────────────────
     const [policies] = await pool.query(
         'SELECT resolution_time_hours FROM sla_policies WHERE priority = ?',
-        [defaultPriority]
+        [finalPriority]
     );
     const resHours = policies[0]?.resolution_time_hours || 2;
     const etr = moment().tz(TZ).add(resHours, 'hours').format('YYYY-MM-DD HH:mm:ss');
@@ -289,7 +300,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description,
          attachment_url, status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, queue_id)
          VALUES (?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, ?, ?, ?)`,
-        [ticketNumber, customerId, projectId, cleanSubject, defaultPriority, description,
+        [ticketNumber, customerId, projectId, cleanSubject, finalPriority, description,
             null, now, etr, systemUserId, null, 'email', null]
     );
     const ticketId = result.insertId;
@@ -299,11 +310,15 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         const ticketObj = {
             ticket_number: ticketNumber,
             category: cleanSubject,
-            priority: defaultPriority,
+            priority: finalPriority,
             description: description,
             etr: etr
         };
         await sendTicketNotification(ticketObj, senderEmail);
+        
+        if (finalPriority === 'P1') {
+            await sendEmergencyBroadcast({ id: ticketId, ...ticketObj });
+        }
     } catch (notifierErr) {
         logger.error(`[EmailPoller] Outbound notification failed: ${notifierErr.message}`);
     }

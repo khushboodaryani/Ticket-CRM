@@ -8,7 +8,7 @@ import axios from '../../api/axios'
 export default function Topbar({ title, subtitle, actions }) {
     const { user } = useAuth()
     const { theme, toggleTheme } = useTheme()
-    const socket = useSocket()
+    const { socket, emergencyMsg, setEmergencyMsg } = useSocket() || {}
     const navigate = useNavigate()
     const [notifications, setNotifications] = useState([])
     const [unread, setUnread] = useState(0)
@@ -30,13 +30,15 @@ export default function Topbar({ title, subtitle, actions }) {
     useEffect(() => {
         if (!socket) return;
 
-        socket.on('new_notification', (notif) => {
+        const handleNotification = (notif) => {
             setNotifications(prev => [notif, ...prev].slice(0, 5));
             setUnread(prev => prev + 1);
-        });
+        };
+
+        socket.on('new_notification', handleNotification);
 
         return () => {
-            socket.off('new_notification');
+            socket.off('new_notification', handleNotification);
         };
     }, [socket])
 
@@ -52,6 +54,65 @@ export default function Topbar({ title, subtitle, actions }) {
 
     return (
         <div className="topbar">
+            {emergencyMsg && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999999,
+                    background: 'rgba(0, 0, 0, 0.55)', backdropFilter: 'blur(16px) saturate(1.5)',
+                    display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center',
+                    color: 'white', textAlign: 'center', padding: '2rem', animation: 'fadeIn 0.2s ease-out'
+                }}>
+                    <div style={{
+                        background: '#ffffff', color: '#dc2626', padding: '3rem', borderRadius: '1rem',
+                        boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', maxWidth: '600px', width: '100%'
+                    }}>
+                        <div style={{ fontSize: '4rem', marginBottom: '1rem', animation: 'pulse 1.5s infinite' }}>🚨</div>
+                        <h2 style={{ margin: 0, fontSize: '2.5rem', fontWeight: 900, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                            CRITICAL EMERGENCY
+                        </h2>
+                        <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, marginBottom: '2rem', color: '#1f2937' }}>
+                            {emergencyMsg.message || 'SYSTEM OUTAGE DETECTED'}
+                        </h3>
+
+                        <div style={{ background: '#fef2f2', border: '2px solid #fecaca', borderRadius: '0.5rem', padding: '1.5rem', marginBottom: '2rem', textAlign: 'left' }}>
+                            <p style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem', color: '#7f1d1d' }}><strong>Ticket:</strong> {emergencyMsg.ticket_number}</p>
+                            <p style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem', color: '#7f1d1d' }}><strong>Category:</strong> {emergencyMsg.category}</p>
+                            <p style={{ margin: 0, fontSize: '1.1rem', color: '#7f1d1d' }}><strong>Priority:</strong> {emergencyMsg.priority}</p>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                            <button
+                                onClick={async () => {
+                                    if (emergencyMsg.ticket_id) {
+                                        navigate(`/tickets/${emergencyMsg.ticket_id}`);
+                                    }
+                                    setEmergencyMsg(null);
+                                }}
+                                style={{
+                                    background: '#dc2626', color: 'white', border: 'none', padding: '1rem 2.5rem',
+                                    borderRadius: '0.5rem', fontSize: '1.1rem', fontWeight: 800, cursor: 'pointer',
+                                    boxShadow: '0 4px 6px -1px rgba(220, 38, 38, 0.4)'
+                                }}
+                            >
+                                VIEW & CLAIM TICKET
+                            </button>
+                            <button
+                                onClick={() => setEmergencyMsg(null)}
+                                style={{
+                                    background: 'transparent', color: '#6b7280', border: '2px solid #e5e7eb',
+                                    padding: '1rem 2rem', borderRadius: '0.5rem', fontSize: '1.1rem', fontWeight: 700, cursor: 'pointer'
+                                }}
+                            >
+                                DISMISS
+                            </button>
+                        </div>
+                    </div>
+                    <style>{`
+                        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.15); } 100% { transform: scale(1); } }
+                        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+                    `}</style>
+                </div>
+            )}
+
             <div style={{ flex: 1 }}>
                 <h1 className="topbar-title">{title}</h1>
                 {subtitle && <p className="topbar-sub">{subtitle}</p>}

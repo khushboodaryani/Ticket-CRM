@@ -49,7 +49,7 @@ function LevelBadge({ l }) { return <span className={`level-badge level-${l}`}>L
 
 export default function Tickets() {
     const { user } = useAuth()
-    const socket = useSocket()
+    const { socket } = useSocket() || {}
     const [tickets, setTickets] = useState([])
     const [queues, setQueues] = useState([])
     const [loading, setLoading] = useState(true)

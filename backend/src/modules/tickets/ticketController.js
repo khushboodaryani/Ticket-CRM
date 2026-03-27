@@ -94,6 +94,51 @@ export const getTicketById = async (req, res) => {
         );
         if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
+        // -- IDEA 3: 1st Responder Auto-Assign (Atomic Claim) --
+        // If an unassigned P1 ticket is viewed by an authenticated user, they instantly become the owner.
+        // EXCEPTION: The creator does NOT auto-claim their own ticket. This prevents the "Red Alert" 
+        // from vanishing for everyone else if the creator immediately navigates to the ticket page.
+        if (rows[0].priority === 'P1' && !rows[0].assigned_to && req.user && rows[0].created_by !== req.user.userId) {
+            logger.info(`🚨 P1 Claim Attempt by ${req.user.name} (ID: ${req.user.userId}) for TKT: ${rows[0].ticket_number}`);
+            
+            // Atomic update ensures only ONE person can claim it first if two agents open the page at the same time
+            const [updateResult] = await pool.query(
+                `UPDATE tickets SET assigned_to = ? WHERE id = ? AND assigned_to IS NULL`, 
+                [req.user.userId, req.params.id]
+            );
+            
+            logger.info(`   -> Update affectedRows: ${updateResult.affectedRows}`);
+            
+            // Only proceed with side-effects if WE were the ones who actually stole the null slot!
+            if (updateResult.affectedRows > 0) {
+                // 1. Log exactly how it was claimed
+                await pool.query(
+                    `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'updated',?,?)`,
+                    [req.params.id, req.user.userId, `Emergency ticket instantly auto-claimed by viewing`]
+                );
+
+                // 2. Hide the Red Modal on everyone else's screen via WebSocket
+                try {
+                    const socketModule = await import("../../services/socketService.js");
+                    socketModule.broadcast("emergency_claimed", { 
+                        ticket_id: req.params.id, 
+                        assigned_to_name: req.user.name 
+                    });
+                } catch (e) { logger.error("Claim socket broadcast failed: " + e.message); }
+
+                // 3. Fire the Green "Stand-Down" Email Blast + Bell DB Notifications
+                try {
+                    const m = await import("../notifications/emailService.js");
+                    await m.sendEmergencyClaimedBroadcast(rows[0], req.user.name);
+                    logger.info(`🔥 Stand-Down Broadcast triggered for TKT: ${rows[0].ticket_number}`);
+                } catch (e) { logger.error("Claim email broadcast failed: " + e.message); }
+
+                // 4. Update the response object so the frontend visually sees the assignment
+                rows[0].assigned_to = req.user.userId;
+                rows[0].assigned_to_name = req.user.name;
+            }
+        }
+
         const [logs] = await pool.query(
             `SELECT el.*, fu.name as from_name, tu.name as to_name
        FROM escalation_logs el
@@ -153,7 +198,8 @@ export const createTicket = async (req, res) => {
         let finalAssignee = assigned_to || null;
 
         // Auto-assign from queue if no assignee given (round-robin: least loaded agent)
-        if (!finalAssignee && queue_id) {
+        // Emergency P1 tickets skip round-robin so they enter the Unassigned pool for the Claim broadcast
+        if (!finalAssignee && queue_id && priority !== 'P1') {
             const [queueAgents] = await pool.query(
                 `SELECT qa.user_id, COUNT(t.id) as load_count
                  FROM queue_agents qa
@@ -166,7 +212,13 @@ export const createTicket = async (req, res) => {
             if (queueAgents.length) finalAssignee = queueAgents[0].user_id;
         }
 
-        if (!finalAssignee && req.user.role === "agent") finalAssignee = req.user.userId;
+        if (!finalAssignee && req.user.role === "agent") {
+            // Only auto-assign standard tickets. Emergency P1 tickets MUST enter the unassigned pool 
+            // to trigger the global "Claim/Stand-Down" broadcast workflow properly.
+            if (priority !== 'P1') {
+                finalAssignee = req.user.userId;
+            }
+        }
 
         const [result] = await pool.query(
             `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description,
@@ -219,6 +271,26 @@ export const createTicket = async (req, res) => {
             ticketId,
             payload: { customer_id, project_id, category, priority, status: 'open', source: source || 'manual', queue_id }
         });
+
+        // Trigger Global Broadcast for P1 — MUST complete BEFORE response is sent
+        // Otherwise the frontend navigates away and misses the socket event
+        if (priority === 'P1') {
+            logger.info(`🚨 P1 EMERGENCY DETECTED in CreateTicket! Triggering broadcast for ${ticket_number}`);
+            try {
+                const { sendEmergencyBroadcast } = await import("../notifications/emailService.js");
+                await sendEmergencyBroadcast({
+                    id: ticketId,
+                    ticket_number: ticket_number,
+                    category: category,
+                    priority: priority,
+                    description: description,
+                    etr: etr
+                });
+                logger.info(`✅ P1 Emergency Broadcast completed for ${ticket_number}`);
+            } catch (e) {
+                logger.error(`P1 Broadcast Error: ${e.message}`);
+            }
+        }
 
         return res.status(201).json({ success: true, message: "Ticket created.", ticketId, ticket_number });
     } catch (err) {

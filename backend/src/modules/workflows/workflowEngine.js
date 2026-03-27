@@ -34,6 +34,13 @@ async function processWorkflows(trigger, data) {
     const pool = connectDB();
     const { ticketId, payload } = data;
 
+    // 0. EMERGENCY BYPASS: P1 Priority tickets skip all automation to remain Unassigned
+    // for the 1st-Responder Claim broadcast workflow.
+    if (payload?.priority === 'P1') {
+        logger.info(`🚨 Skipping Workflow Rules for P1 Ticket #${ticketId} to preserve Unassigned Crisis pool.`);
+        return;
+    }
+
     // 1. Fetch active rules for this trigger
     const [rules] = await pool.query(
         "SELECT * FROM workflow_rules WHERE trigger_event = ? AND is_active = 1",
