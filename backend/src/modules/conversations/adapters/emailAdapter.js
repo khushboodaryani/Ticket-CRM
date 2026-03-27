@@ -16,56 +16,107 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
- * Generate HTML for previous conversation trail
+ * Build a full chronological conversation trail for inclusion in outgoing emails.
+ * Merges conversation messages + key activity events (status changes, assignments)
+ * sorted oldest → newest so the customer reads the thread naturally top-to-bottom.
  */
-export const getConversationTrailHtml = async (pool, ticketId, excludeMessageId = 0) => {
+export const getConversationTrailHtml = async (pool, ticketId) => {
     try {
+        // ── 1. Fetch all non-internal conversation messages ───────────────────
         const [conversations] = await pool.query(
             "SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1",
             [ticketId]
         );
-        
-        if (!conversations.length) return "";
 
-        const conversationId = conversations[0].id;
-        const queryArgs = [conversationId];
-        let queryStr = `
-            SELECT cm.*, u.name as sender_name 
-            FROM conversation_messages cm 
-            LEFT JOIN users u ON cm.sender_id = u.id 
-            WHERE cm.conversation_id = ? AND cm.is_internal_note = 0
-        `;
-        
-        if (excludeMessageId) {
-            queryStr += " AND cm.id != ?";
-            queryArgs.push(excludeMessageId);
+        let messages = [];
+        if (conversations.length) {
+            const [msgRows] = await pool.query(
+                `SELECT cm.created_at, cm.message_body, cm.sender_type,
+                        u.name as sender_name
+                 FROM conversation_messages cm
+                 LEFT JOIN users u ON cm.sender_id = u.id
+                 WHERE cm.conversation_id = ? AND cm.is_internal_note = 0
+                 ORDER BY cm.created_at ASC`,
+                [conversations[0].id]
+            );
+            messages = msgRows.map(m => ({
+                ts: new Date(m.created_at),
+                type: 'message',
+                sender: m.sender_type === 'agent' ? (m.sender_name || 'Support Agent') : 'Customer',
+                senderType: m.sender_type,
+                body: (m.message_body || '').replace(/\n/g, '<br/>')
+            }));
         }
-        
-        queryStr += " ORDER BY cm.created_at DESC LIMIT 5";
 
-        const [msgRows] = await pool.query(queryStr, queryArgs);
+        // ── 2. Fetch key activity events ──────────────────────────────────────
+        const [actRows] = await pool.query(
+            `SELECT ta.created_at, ta.action, ta.note, u.name as actor_name
+             FROM ticket_activities ta
+             LEFT JOIN users u ON ta.performed_by = u.id
+             WHERE ta.ticket_id = ?
+               AND ta.action IN ('created','updated','status_changed','assigned','priority_changed','sla_breached')
+             ORDER BY ta.created_at ASC`,
+            [ticketId]
+        );
+        const events = actRows.map(a => ({
+            ts: new Date(a.created_at),
+            type: 'event',
+            actor: a.actor_name || 'System',
+            note: a.note || a.action
+        }));
 
-        if (msgRows.length === 0) return "";
+        // ── 3. Merge + sort everything chronologically ────────────────────────
+        const timeline = [...messages, ...events].sort((a, b) => a.ts - b.ts);
+
+        if (timeline.length === 0) return '';
+
+        const rows = timeline.map(item => {
+            const dateStr = item.ts.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+            if (item.type === 'event') {
+                return `
+                <tr>
+                  <td style="padding:8px 12px; border-bottom:1px solid #f0f0f0;">
+                    <span style="display:inline-block;background:#f1f5f9;color:#475569;
+                                 font-size:11px;padding:3px 8px;border-radius:12px;">
+                      🔔 ${item.note}
+                    </span>
+                    <span style="font-size:10px;color:#94a3b8;margin-left:8px;">${dateStr}</span>
+                  </td>
+                </tr>`;
+            }
+
+            // message row
+            const isAgent = item.senderType === 'agent';
+            const bgColor = isAgent ? '#f0f9ff' : '#ffffff';
+            const borderColor = isAgent ? '#3b82f6' : '#e2e8f0';
+            const labelColor = isAgent ? '#1d4ed8' : '#374151';
+            return `
+                <tr>
+                  <td style="padding:10px 12px; border-bottom:1px solid #f0f0f0; background:${bgColor};">
+                    <p style="margin:0 0 4px 0; font-size:11px; color:${labelColor}; font-weight:600;">
+                      ${item.sender}
+                      <span style="font-weight:400;color:#94a3b8;margin-left:6px;">${dateStr}</span>
+                    </p>
+                    <div style="font-size:13px;color:#374151;line-height:1.6;
+                                border-left:3px solid ${borderColor};padding-left:10px;margin-top:4px;">
+                      ${item.body}
+                    </div>
+                  </td>
+                </tr>`;
+        }).join('');
 
         return `
-            <div style="margin-top: 30px; border-top: 2px solid #e2e8f0; padding-top: 15px;">
-                <p style="font-size: 13px; color: #666; font-weight: bold; margin-bottom: 12px;">--- Previous Conversation ---</p>
-                ${msgRows.map(msg => {
-                    const sender = msg.sender_type === 'agent' ? (msg.sender_name || 'Support Agent') : 'You';
-                    const date = new Date(msg.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-                    const body = (msg.message_body || '').replace(/\n/g, '<br/>');
-                    return `
-                        <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #f0f0f0;">
-                            <p style="font-size: 11px; color: #888; margin: 0;"><strong>${sender}</strong> - ${date}</p>
-                            <div style="font-size: 12px; margin: 4px 0 0 0; color: #444; line-height: 1.5;">${body}</div>
-                        </div>
-                    `;
-                }).join('')}
-            </div>
-        `;
+        <div style="margin-top:20px; border-top:1px solid #e2e8f0; padding-top:10px;">
+          <table width="100%" cellpadding="0" cellspacing="0"
+                 style="background:#fff; font-family:sans-serif;">
+            ${rows}
+          </table>
+        </div>`;
+
     } catch (e) {
         logger.error(`[EmailAdapter] Trail Error: ${e.message}`);
-        return "";
+        return '';
     }
 };
 
@@ -111,8 +162,8 @@ export const send = async (customerEmail, data) => {
         const ticket = tickets[0];
         const formattedMessage = data.message.replace(/\n/g, '<br/>');
 
-        // Fetch previous messages for the trail
-        const trailHtml = await getConversationTrailHtml(pool, data.ticketId, data.messageId);
+        // Fetch full conversation trail (all messages + activity events)
+        const trailHtml = await getConversationTrailHtml(pool, data.ticketId);
 
         // Email threading headers - reference the original ticket message
         const originalMessageId = `<${ticket.ticket_number}@ticketcrm.local>`;
@@ -136,7 +187,7 @@ export const send = async (customerEmail, data) => {
                         ${formattedMessage}
                     </div>
 
-                    ${signature ? `<div style="margin: 15px 0; padding: 10px; background: #fafafa; border-radius: 4px; border-left: 3px solid #ddd; color: #555; font-size: 13px; white-space: pre-line;">${signature}</div>` : ''}
+                    ${signature ? `<div style="margin-top: 20px; color: #64748b; font-size: 13px; border-top: 1px solid #f1f5f9; padding-top: 10px; white-space: pre-line;">--<br/>${signature}</div>` : ''}
 
                     ${trailHtml}
 

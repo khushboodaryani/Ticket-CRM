@@ -15,36 +15,49 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
- * Send notification to customer about new ticket
+ * Send notification to customer about new ticket — includes conversation trail
  */
 export const sendTicketNotification = async (ticket, customerEmail) => {
     if (!customerEmail) return;
 
+    const pool = connectDB();
     const formattedDescription = ticket.description
         ? ticket.description.replace(/\n/g, '<br/>').replace(/\*/g, '')
         : '';
 
     const messageId = `<${ticket.ticket_number}@ticketcrm.local>`;
-    
+
+    // Fetch the trail (will show the 'created' activity event + original description message)
+    const trailHtml = ticket.id ? await getConversationTrailHtml(pool, ticket.id) : '';
+
     const mailOptions = {
         from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
-        subject: `[${ticket.ticket_number}] Ticket Created: ${ticket.category}`,
+        subject: `[${ticket.ticket_number}] ${ticket.category}`,
         headers: {
             'Message-ID': messageId,
         },
         html: `
-      <div style="font-family: sans-serif; padding: 20px; color: #333;">
-        <h2 style="color: #4f8ef7;">Ticket Created Successfully</h2>
-        <p>Hello,</p>
-        <p>Your ticket has been created in our system. Our team will look into it shortly.</p>
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Ticket Number:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Priority:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.priority}</td></tr>
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; vertical-align: top;"><strong>Description:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee; white-space: pre-wrap; font-family: inherit;">${formattedDescription}</td></tr>
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>ETR (Estimated Resolution):</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.etr}</td></tr>
+      <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
+        <h2 style="color: #4f8ef7; margin-bottom: 4px;">Ticket Acknowledgement</h2>
+        <p style="color: #64748b; margin-top: 0;">Your request has been received (Ticket ${ticket.ticket_number}). Our team will respond shortly.</p>
+
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 13px;">
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b; width:40%"><strong>Ticket Number</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Category</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.category}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Priority</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.priority}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>ETR (Deadline)</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.etr}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b; vertical-align:top"><strong>Description</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee; white-space: pre-wrap;">${formattedDescription}</td></tr>
         </table>
-        <p>Regards,<br/>Team Multycomm</p>
+
+        <p style="font-size: 13px; color: #666;">
+          To reply or add more details, simply respond to this email — your message will automatically be added to the ticket.
+        </p>
+
+        ${trailHtml}
+
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
+        <p style="font-size: 12px; color: #999;">Regards,<br/><strong>Team Multycomm</strong></p>
       </div>
     `
     };
@@ -56,6 +69,7 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
         logger.error(`❌ Failed to send notification email: ${error.message}`);
     }
 };
+
 
 /**
  * Send notification to customer about ticket status update
@@ -72,7 +86,7 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, newSta
     const mailOptions = {
         from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
-        subject: `[${ticket.ticket_number}] Status Update: ${ticket.category}`,
+        subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
         headers: {
             'In-Reply-To': threadId,
             'References': threadId,

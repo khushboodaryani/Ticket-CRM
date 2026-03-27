@@ -34,20 +34,40 @@ function normalizeEmail(raw = '') {
 
 // ─── core logic ─────────────────────────────────────────────────────────────
 
+let lastProcessStart = 0;
+
 export async function processEmails(connection) {
+    const now = Date.now();
+    
+    // Safety check: if isProcessing has been true for > 2 minutes, assume a hang and reset
+    if (isProcessing && (now - lastProcessStart > 120000)) {
+        logger.warn(`[EmailPoller] Detection of potential hang (processing for >2m). Resetting lock.`);
+        isProcessing = false;
+    }
+
     if (isProcessing) return;
+    
     isProcessing = true;
+    lastProcessStart = now;
 
     try {
-        // Fetch only UNSEEN emails from TODAY to avoid processing backlog older items
         const dateStr = moment().format('DD-MMM-YYYY');
-        const searchCriteria = ['UNSEEN', ['SINCE', dateStr]];
+        const searchCriteria = ['UNSEEN', ['SINCE', dateStr]]; 
         const fetchOptions = {
             bodies: ['HEADER', 'TEXT', ''],
             markSeen: false,
         };
 
-        const messages = await connection.search(searchCriteria, fetchOptions);
+        logger.info(`[EmailPoller] Searching for UNSEEN emails since ${dateStr}...`);
+        
+        // Add a 30s timeout to search to avoid infinite hangs
+        const searchPromise = connection.search(searchCriteria, fetchOptions);
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('IMAP Search Timeout')), 30000)
+        );
+
+        const messages = await Promise.race([searchPromise, timeoutPromise]);
+        
         if (!messages.length) {
             isProcessing = false;
             return;
@@ -65,7 +85,7 @@ export async function processEmails(connection) {
                     parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10)
                 );
             } catch (err) {
-                logger.error(`[EmailPoller] Failed to process one email: ${err.message}`);
+                logger.error(`[EmailPoller] Failed to process one email (UID: ${msg.attributes?.uid}): ${err.message}`);
             }
         }
 
@@ -128,6 +148,19 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             conversationId = newConvo.insertId;
         }
 
+        // Duplicate guard: check if this exact message was already added in the last 15 mins
+        const [existing] = await pool.query(
+            `SELECT id FROM conversation_messages 
+             WHERE conversation_id = ? AND message_body = ? AND created_at > DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+             LIMIT 1`,
+            [conversationId, bodyText]
+        );
+
+        if (existing.length) {
+            logger.warn(`[EmailPoller] Skipping duplicate reply for ticket ${ticketNumber}`);
+            return;
+        }
+
         // Add message to conversation
         const [msgResult] = await pool.query(
             `INSERT INTO conversation_messages (conversation_id, sender_type, sender_id, message_body, created_at)
@@ -170,15 +203,17 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     let matchedTicketNumber = null;
 
     // 1. Match from Subject
-    const ticketNumberMatch = subject.match(/\[?(TKT-\d{8}-\d{4})\]?/i);
+    // Looking for the format TKT-YYYYMMDD-XXXX (optionally in brackets)
+    const ticketNumberMatch = subject.match(/(TKT-\d{8}-\d{4})/i);
     if (ticketNumberMatch) {
         matchedTicketNumber = ticketNumberMatch[1].toUpperCase();
+        logger.info(`[EmailPoller] Match found in subject: ${matchedTicketNumber}`);
     } else {
         // 2. Match from Headers (Fallback)
         const replyTo = parsed.inReplyTo || '';
         const refs = Array.isArray(parsed.references) ? parsed.references.join(' ') : (parsed.references || '');
         const combined = `${replyTo} ${refs}`;
-        const headerMatch = combined.match(/<(TKT-\d{8}-\d{4})@ticketcrm\.local>/i);
+        const headerMatch = combined.match(/(TKT-\d{8}-\d{4})@ticketcrm\.local/i);
         if (headerMatch) {
             matchedTicketNumber = headerMatch[1].toUpperCase();
             logger.info(`[EmailPoller] ✅ Threading matched via header reference: ${matchedTicketNumber}`);

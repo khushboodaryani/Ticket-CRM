@@ -259,10 +259,10 @@ export const createTicket = async (req, res) => {
             });
         }
 
-        // Send email notification
+        // Send email notification with conversation trail
         if (customerEmail) {
             import("../notifications/emailService.js").then(module => {
-                module.sendTicketNotification({ ticket_number, category, priority, description, etr }, customerEmail);
+                module.sendTicketNotification({ id: ticketId, ticket_number, category, priority, description, etr }, customerEmail);
             });
         }
 
