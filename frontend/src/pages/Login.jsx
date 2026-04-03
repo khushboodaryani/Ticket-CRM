@@ -111,6 +111,12 @@ export default function Login() {
           </button>
         </form>
 
+        <div className="lp-forgot-wrap">
+            <button className="lp-forgot-btn" onClick={() => navigate('/forgot-password')}>
+                Forgot Password
+            </button>
+        </div>
+
         {/* <div className="lp-creds">
                     <div className="lp-creds-label">Default credentials</div>
                     <div className="lp-creds-row"><code>admin@ticketcrm.com</code><span>/</span><code>Admin@1234</code></div>
@@ -292,10 +298,28 @@ export default function Login() {
           font-family: 'DM Mono', 'Courier New', monospace;
           font-size: 12px;
           color: rgba(140,165,220,0.7);
-          background: rgba(255,255,255,0.04);
+          background: rgba(255, 255, 255, 0.04);
           padding: 2px 7px;
           border-radius: 5px;
-          border: 1px solid rgba(255,255,255,0.07);
+          border: 1px solid rgba(255, 255, 255, 0.07);
+        }
+        .lp-forgot-wrap {
+            margin-top: 24px;
+            text-align: center;
+        }
+        .lp-forgot-btn {
+            background: none;
+            border: none;
+            color: #3b82f6;
+            font-weight: 700;
+            font-size: 18px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            font-family: inherit;
+        }
+        .lp-forgot-btn:hover {
+            opacity: 0.8;
+            text-decoration: underline;
         }
       `}</style>
     </div>

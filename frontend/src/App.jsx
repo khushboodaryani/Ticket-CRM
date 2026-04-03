@@ -8,6 +8,7 @@ import Layout from './components/Layout/Layout'
 import ProtectedRoute from './components/Layout/ProtectedRoute'
 
 import Login from './pages/Login'
+import ForgotPassword from './pages/ForgotPassword.jsx'
 import Dashboard from './pages/Dashboard'
 import Tickets from './pages/Tickets'
 import TicketDetail from './pages/TicketDetail'
@@ -48,6 +49,7 @@ export default function App() {
                         />
                         <Routes>
                             <Route path="/login" element={<Login />} />
+                            <Route path="/forgot-password" element={<ForgotPassword />} />
                             <Route path="/reset-password/:userId/:token" element={<ResetPassword />} />
                             <Route path="/" element={<Navigate to="/dashboard" replace />} />
 

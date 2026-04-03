@@ -76,17 +76,8 @@ export const createUser = async (req, res) => {
 
         const userId = result.insertId;
 
-        // Generate a 1-hour reset token for the welcome link
-        const resetToken = jwt.sign(
-            { userId: userId, email: email, purpose: 'password_reset' },
-            process.env.JWT_SECRET,
-            { expiresIn: '1h' }
-        );
-
-        const resetLink = `${process.env.FRONTEND_URL}/reset-password/${userId}/${resetToken}`;
-
-        // Trigger Welcome Email
-        await sendWelcomeEmail({ name, email }, password, resetLink);
+        // Trigger Welcome Email - Now just sends credentials, no reset link
+        await sendWelcomeEmail({ name, email, role }, password);
 
         return res.status(201).json({ success: true, message: 'User created and welcome email sent.', userId });
     } catch (err) {

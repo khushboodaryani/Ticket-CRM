@@ -241,7 +241,7 @@ export const sendEmergencyClaimedBroadcast = async (ticket, claimedByName) => {
 /**
  * Send Welcome Email to newly created staff/user
  */
-export const sendWelcomeEmail = async (user, plainPassword, resetLink) => {
+export const sendWelcomeEmail = async (user, plainPassword) => {
     if (!user.email) return;
 
     const mailOptions = {
@@ -257,20 +257,11 @@ export const sendWelcomeEmail = async (user, plainPassword, resetLink) => {
         <div style="background-color: #f8fafc; padding: 20px; border-radius: 6px; margin: 20px 0;">
           <p style="margin: 0 0 10px 0;"><strong>Login URL:</strong> <a href="${process.env.FRONTEND_URL}/login">${process.env.FRONTEND_URL}/login</a></p>
           <p style="margin: 0 0 10px 0;"><strong>Email:</strong> ${user.email}</p>
-          <p style="margin: 0;"><strong>Temporary Password:</strong> <code style="background: #e2e8f0; padding: 2px 4px; border-radius: 4px;">${plainPassword}</code></p>
+          <p style="margin: 0 0 10px 0;"><strong>Password:</strong> <code style="background: #e2e8f0; padding: 2px 4px; border-radius: 4px;">${plainPassword}</code></p>
+          <p style="margin: 0;"><strong>Role:</strong> <span style="text-transform: uppercase; font-weight: bold; color: #4f8ef7;">${user.role}</span></p>
         </div>
 
-        <p style="color: #ef4444; font-weight: bold;">Important Security Step:</p>
-        <p>For security reasons, please click the button below to reset your password immediately:</p>
-        
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${resetLink}" style="background-color: #4f8ef7; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Reset Your Password</a>
-        </div>
-
-        <p style="font-size: 13px; color: #64748b;">
-          If the button above doesn't work, copy and paste this link into your browser:<br/>
-          <span style="word-break: break-all;">${resetLink}</span>
-        </p>
+        <p>Please secure your credentials and log in to get started.</p>
 
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;"/>
         <p style="font-size: 12px; color: #94a3b8; text-align: center;">
@@ -286,5 +277,51 @@ export const sendWelcomeEmail = async (user, plainPassword, resetLink) => {
         logger.info(`📧 Welcome email sent to ${user.email}`);
     } catch (error) {
         logger.error(`❌ Failed to send welcome email to ${user.email}: ${error.message}`);
+    }
+};
+
+/**
+ * Send Password Reset Email with time-limited link
+ */
+export const sendForgotPasswordEmail = async (user, resetLink) => {
+    if (!user.email) return;
+
+    const mailOptions = {
+        from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
+        to: user.email,
+        subject: `Password Reset Request - Ticket CRM`,
+        html: `
+      <div style="font-family: sans-serif; padding: 30px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #4f8ef7; margin-bottom: 20px;">Password Reset</h2>
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>You recently requested to reset your password for your Ticket CRM account. Click the button below to proceed:</p>
+        
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${resetLink}" style="background-color: #4f8ef7; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Reset Password</a>
+        </div>
+
+        <p style="font-size: 13px; color: #64748b;">
+          This link will expire in 1 hour. If you did not request a password reset, please ignore this email.
+        </p>
+        
+        <p style="font-size: 13px; color: #64748b;">
+          If the button above doesn't work, copy and paste this link into your browser:<br/>
+          <span style="word-break: break-all; color: #4f8ef7;">${resetLink}</span>
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;"/>
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">
+          Sent by Ticket CRM Support<br/>
+          &copy; ${new Date().getFullYear()} Multycomm
+        </p>
+      </div>
+    `
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        logger.info(`📧 Forgot password email sent to ${user.email}`);
+    } catch (error) {
+        logger.error(`❌ Failed to send forgot password email to ${user.email}: ${error.message}`);
     }
 };

@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import connectDB from "../../db/index.js";
 import dotenv from "dotenv";
 import { logger } from "../../logger.js";
+import { sendForgotPasswordEmail } from "../notifications/emailService.js";
 dotenv.config();
 
 // POST /api/auth/login
@@ -107,6 +108,40 @@ export const verifyAndResetPassword = async (req, res) => {
         return res.json({ success: true, message: "Password has been reset successfully. You can now log in." });
     } catch (err) {
         logger.error(`ResetPassword error: ${err.message}`);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// POST /api/auth/forgot-password
+export const requestPasswordReset = async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: "Email is required." });
+
+    try {
+        const pool = connectDB();
+        const [users] = await pool.query(`SELECT id, name, email FROM users WHERE email = ? AND is_active = 1`, [email]);
+        
+        // Security: Always return success to prevent user enumeration
+        if (!users.length) {
+            logger.warn(`Password reset requested for non-existent or inactive email: ${email}`);
+            return res.json({ success: true, message: "If this email is registered, you will receive a reset link shortly." });
+        }
+
+        const user = users[0];
+        const resetToken = jwt.sign(
+            { userId: user.id, email: user.email, purpose: 'password_reset' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        const resetLink = `${process.env.FRONTEND_URL}/reset-password/${user.id}/${resetToken}`;
+        
+        await sendForgotPasswordEmail(user, resetLink);
+
+        logger.info(`Password reset link sent to ${email}`);
+        return res.json({ success: true, message: "If this email is registered, you will receive a reset link shortly." });
+    } catch (err) {
+        logger.error(`ForgotPassword error: ${err.message}`);
         return res.status(500).json({ success: false, message: "Server error." });
     }
 };
