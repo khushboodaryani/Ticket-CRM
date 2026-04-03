@@ -11,15 +11,15 @@ export default defineConfig({
         ],
         proxy: {
             '/api': {
-                target: 'http://localhost:8995',
+                target: 'http://localhost:8450',
                 changeOrigin: true,
             },
             '/attachments': {
-                target: 'http://localhost:8995',
+                target: 'http://localhost:8450',
                 changeOrigin: true,
             },
             '/socket.io': {
-                target: 'http://localhost:8995',
+                target: 'http://localhost:8450',
                 ws: true,
                 changeOrigin: true,
             }

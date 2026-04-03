@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import connectDB from "../../db/index.js";
 import dotenv from "dotenv";
+import { logger } from "../../logger.js";
 dotenv.config();
 
 // POST /api/auth/login
@@ -55,6 +56,57 @@ export const getMe = async (req, res) => {
         return res.json({ success: true, user: rows[0] });
     } catch (err) {
         console.error("GetMe error:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// POST /api/auth/reset-password
+export const verifyAndResetPassword = async (req, res) => {
+    const { userId, token, newPassword } = req.body;
+
+    if (!userId || !token || !newPassword) {
+        return res.status(400).json({ success: false, message: "User ID, token, and new password are required." });
+    }
+
+    try {
+        logger.info(`Attempting password reset for userId: ${userId}`);
+        
+        // 1. Verify token
+        let decoded;
+        try {
+            decoded = jwt.verify(token, process.env.JWT_SECRET);
+            logger.info(`Token decoded successfully for userId: ${decoded.userId}`);
+        } catch (err) {
+            logger.error(`JWT Verification failed: ${err.message}`);
+            return res.status(401).json({ success: false, message: "Invalid or expired reset token." });
+        }
+
+        // 2. Ensure token belongs to this user and is for password reset
+        if (decoded.userId != userId || decoded.purpose !== 'password_reset') {
+            logger.error(`Token payload mismatch. Decoded ID: ${decoded.userId}, Body ID: ${userId}, Purpose: ${decoded.purpose}`);
+            return res.status(401).json({ success: false, message: "Invalid token payload." });
+        }
+
+        const pool = connectDB();
+        
+        // 3. Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+        // 4. Update user
+        const [result] = await pool.query(
+            `UPDATE users SET password_hash = ? WHERE id = ?`,
+            [hashedPassword, userId]
+        );
+
+        if (result.affectedRows === 0) {
+            logger.error(`User not found in DB for reset: userId ${userId}`);
+            return res.status(404).json({ success: false, message: "User not found." });
+        }
+
+        logger.info(`Password reset successful for userId: ${userId}`);
+        return res.json({ success: true, message: "Password has been reset successfully. You can now log in." });
+    } catch (err) {
+        logger.error(`ResetPassword error: ${err.message}`);
         return res.status(500).json({ success: false, message: "Server error." });
     }
 };

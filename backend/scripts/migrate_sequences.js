@@ -12,7 +12,8 @@ async function migrate() {
                 prefix VARCHAR(10) NOT NULL,
                 current_value INT NOT NULL DEFAULT 0,
                 last_date DATE NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                updated_at TIMEST
+                AMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
         `);
 

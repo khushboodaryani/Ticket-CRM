@@ -237,3 +237,54 @@ export const sendEmergencyClaimedBroadcast = async (ticket, claimedByName) => {
         logger.error(`❌ Failed to send emergency claimed broadcast: ${err.message}`);
     }
 };
+
+/**
+ * Send Welcome Email to newly created staff/user
+ */
+export const sendWelcomeEmail = async (user, plainPassword, resetLink) => {
+    if (!user.email) return;
+
+    const mailOptions = {
+        from: `"Ticket CRM Admin" <${process.env.EMAIL_USER}>`,
+        to: user.email,
+        subject: `Welcome to Ticket CRM, ${user.name}!`,
+        html: `
+      <div style="font-family: sans-serif; padding: 30px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #4f8ef7; margin-bottom: 20px;">Welcome to the Team!</h2>
+        <p>Hello <strong>${user.name}</strong>,</p>
+        <p>Your account has been created successfully. You can now log in to the Ticket CRM using the credentials below:</p>
+        
+        <div style="background-color: #f8fafc; padding: 20px; border-radius: 6px; margin: 20px 0;">
+          <p style="margin: 0 0 10px 0;"><strong>Login URL:</strong> <a href="${process.env.FRONTEND_URL}/login">${process.env.FRONTEND_URL}/login</a></p>
+          <p style="margin: 0 0 10px 0;"><strong>Email:</strong> ${user.email}</p>
+          <p style="margin: 0;"><strong>Temporary Password:</strong> <code style="background: #e2e8f0; padding: 2px 4px; border-radius: 4px;">${plainPassword}</code></p>
+        </div>
+
+        <p style="color: #ef4444; font-weight: bold;">Important Security Step:</p>
+        <p>For security reasons, please click the button below to reset your password immediately:</p>
+        
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${resetLink}" style="background-color: #4f8ef7; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Reset Your Password</a>
+        </div>
+
+        <p style="font-size: 13px; color: #64748b;">
+          If the button above doesn't work, copy and paste this link into your browser:<br/>
+          <span style="word-break: break-all;">${resetLink}</span>
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;"/>
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">
+          Sent by Ticket CRM System<br/>
+          &copy; ${new Date().getFullYear()} Multycomm
+        </p>
+      </div>
+    `
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        logger.info(`📧 Welcome email sent to ${user.email}`);
+    } catch (error) {
+        logger.error(`❌ Failed to send welcome email to ${user.email}: ${error.message}`);
+    }
+};

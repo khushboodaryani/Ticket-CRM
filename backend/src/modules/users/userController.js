@@ -1,6 +1,8 @@
 // modules/users/userController.js
 import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
 import connectDB from "../../db/index.js";
+import { sendWelcomeEmail } from "../notifications/emailService.js";
 
 const VALID_ROLES = ["superadmin", "gm", "manager", "tl", "agent"];
 
@@ -71,7 +73,22 @@ export const createUser = async (req, res) => {
             `INSERT INTO users (name, email, password_hash, role, reporting_to, is_active, signature) VALUES (?,?,?,?,?,1,?)`,
             [name, email, hash, role, reporting_to || null, signature || null]
         );
-        return res.status(201).json({ success: true, message: 'User created.', userId: result.insertId });
+
+        const userId = result.insertId;
+
+        // Generate a 1-hour reset token for the welcome link
+        const resetToken = jwt.sign(
+            { userId: userId, email: email, purpose: 'password_reset' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        const resetLink = `${process.env.FRONTEND_URL}/reset-password/${userId}/${resetToken}`;
+
+        // Trigger Welcome Email
+        await sendWelcomeEmail({ name, email }, password, resetLink);
+
+        return res.status(201).json({ success: true, message: 'User created and welcome email sent.', userId });
     } catch (err) {
         console.error('createUser:', err);
         return res.status(500).json({ success: false, message: 'Server error.' });

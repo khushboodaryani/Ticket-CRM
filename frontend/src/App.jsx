@@ -23,6 +23,7 @@ import Queues from './pages/Queues'
 import WorkflowBuilder from './pages/WorkflowBuilder'
 import Analytics from './pages/Analytics'
 import SlaSettings from './pages/SlaSettings'
+import ResetPassword from './pages/ResetPassword'
 
 
 export default function App() {
@@ -47,6 +48,7 @@ export default function App() {
                         />
                         <Routes>
                             <Route path="/login" element={<Login />} />
+                            <Route path="/reset-password/:userId/:token" element={<ResetPassword />} />
                             <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
                             <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
