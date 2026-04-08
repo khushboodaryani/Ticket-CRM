@@ -5,6 +5,7 @@ import { sendTicketNotification, sendTicketStatusNotification } from "../notific
 import { createNotification } from "../notifications/notificationController.js";
 import { workflowEvents } from "../workflows/workflowEngine.js";
 import { logger } from "../../logger.js";
+import { getShiftAssignee } from "../../services/assignmentService.js";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 const buildETR = () => moment().tz(TZ).add(2, "hours").format("YYYY-MM-DD HH:mm:ss");
@@ -197,19 +198,10 @@ export const createTicket = async (req, res) => {
 
         let finalAssignee = assigned_to || null;
 
-        // Auto-assign from queue if no assignee given (round-robin: least loaded agent)
-        // Emergency P1 tickets skip round-robin so they enter the Unassigned pool for the Claim broadcast
-        if (!finalAssignee && queue_id && priority !== 'P1') {
-            const [queueAgents] = await pool.query(
-                `SELECT qa.user_id, COUNT(t.id) as load_count
-                 FROM queue_agents qa
-                 LEFT JOIN tickets t ON t.assigned_to = qa.user_id AND t.status IN ('open','in_progress')
-                 WHERE qa.queue_id=? AND qa.role='agent'
-                 GROUP BY qa.user_id
-                 ORDER BY load_count ASC LIMIT 1`,
-                [queue_id]
-            );
-            if (queueAgents.length) finalAssignee = queueAgents[0].user_id;
+        // Auto-assign based on shifts and online availability if no assignee given
+        // Emergency P1 tickets skip auto-assignment to trigger the claim broadcast instead
+        if (!finalAssignee && priority !== 'P1') {
+            finalAssignee = await getShiftAssignee(priority);
         }
 
         if (!finalAssignee && req.user.role === "agent") {

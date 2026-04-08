@@ -9,6 +9,8 @@ import connectDB from '../db/index.js';
 import { logger } from '../logger.js';
 import moment from 'moment-timezone';
 import { sendTicketNotification, sendEmergencyBroadcast, sendParticipantReplyNotification } from '../modules/notifications/emailService.js';
+import { getShiftAssignee } from './assignmentService.js';
+import { createNotification } from '../modules/notifications/notificationController.js';
 
 const TZ = process.env.TIMEZONE || 'Asia/Kolkata';
 
@@ -280,12 +282,24 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     const [policies] = await pool.query('SELECT resolution_time_hours FROM sla_policies WHERE priority = ?', [finalPriority]);
     const etr = moment().tz(TZ).add(policies[0]?.resolution_time_hours || 2, 'hours').format('YYYY-MM-DD HH:mm:ss');
 
+    const finalAssigneeId = await getShiftAssignee(finalPriority);
+
     const [result] = await pool.query(
-        `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description, status, escalation_level, sla_state, str, etr, created_by, source)
-         VALUES (?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, 'email')`,
-        [ticketNumber, customerId, defaultProjectId, cleanSubject, finalPriority, description, nowStr, etr, systemUserId]
+        `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description, status, escalation_level, sla_state, str, etr, created_by, assigned_to, source)
+         VALUES (?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, ?, 'email')`,
+        [ticketNumber, customerId, defaultProjectId, cleanSubject, finalPriority, description, nowStr, etr, systemUserId, finalAssigneeId]
     );
     const ticketId = result.insertId;
+
+    if (finalAssigneeId) {
+        await createNotification(pool, {
+            user_id: finalAssigneeId,
+            type: 'ticket_assigned',
+            title: `Auto-Assigned: ${ticketNumber}`,
+            body: `You have been auto-assigned a new email ticket: ${cleanSubject}`,
+            entity_id: ticketId
+        });
+    }
 
     await pool.query('INSERT INTO ticket_activities (ticket_id, action, note) VALUES (?, "created", ?)', [ticketId, `Auto-created from email: ${senderEmail}`]);
     const [cvResult] = await pool.query('INSERT INTO conversations (ticket_id, source_channel, participant_identity, cc_emails) VALUES (?,?,?,?)', [ticketId, 'email', senderEmail, participantList.join(',') || null]);
