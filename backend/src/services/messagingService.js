@@ -69,10 +69,27 @@ export const handleInbound = async (payload) => {
             ticketId = existingTicket[0].id;
         }
 
-        // 3. Add Message to Conversations
+        // 3. Find or Create Conversation record
+        const [conversations] = await pool.query(
+            "SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1",
+            [ticketId]
+        );
+
+        let conversationId;
+        if (!conversations.length) {
+            const [newConv] = await pool.query(
+                "INSERT INTO conversations (ticket_id, source_channel, participant_identity) VALUES (?, ?, ?)",
+                [ticketId, channel, senderId]
+            );
+            conversationId = newConv.insertId;
+        } else {
+            conversationId = conversations[0].id;
+        }
+
+        // 4. Add Message to Conversation Messages
         await pool.query(
-            `INSERT INTO conversations (ticket_id, sender_type, message, metadata) VALUES (?, 'customer', ?, ?)`,
-            [ticketId, body, JSON.stringify(metadata)]
+            `INSERT INTO conversation_messages (conversation_id, sender_type, message_body, created_at) VALUES (?, 'customer', ?, NOW())`,
+            [conversationId, body]
         );
 
         return { success: true, ticketId };

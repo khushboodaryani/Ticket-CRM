@@ -24,25 +24,28 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
     try {
         // ── 1. Fetch all non-internal conversation messages ───────────────────
         const [conversations] = await pool.query(
-            "SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1",
+            "SELECT id FROM conversations WHERE ticket_id = ?",
             [ticketId]
         );
 
         let messages = [];
         if (conversations.length) {
+            const convIds = conversations.map(c => c.id);
             const [msgRows] = await pool.query(
-                `SELECT cm.created_at, cm.message_body, cm.sender_type,
-                        u.name as sender_name
+                `SELECT cm.created_at, cm.message_body, cm.sender_type, cm.sender_name as guest_name,
+                        u.name as agent_name
                  FROM conversation_messages cm
                  LEFT JOIN users u ON cm.sender_id = u.id
-                 WHERE cm.conversation_id = ? AND cm.is_internal_note = 0
+                 WHERE cm.conversation_id IN (?) AND cm.is_internal_note = 0
                  ORDER BY cm.created_at ASC`,
-                [conversations[0].id]
+                [convIds]
             );
             messages = msgRows.map(m => ({
                 ts: new Date(m.created_at),
                 type: 'message',
-                sender: m.sender_type === 'agent' ? (m.sender_name || 'Support Agent') : 'Customer',
+                sender: m.sender_type === 'agent' 
+                    ? (m.agent_name || 'Support Agent') 
+                    : (m.guest_name || 'Customer'),
                 senderType: m.sender_type,
                 body: (m.message_body || '').replace(/\n/g, '<br/>')
             }));

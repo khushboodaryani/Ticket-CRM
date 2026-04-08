@@ -72,6 +72,81 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
 
 
 /**
+ * Sync participant replies across all parties (Primary Customer + CCs)
+ * Ensures everyone's Gmail inbox stays in sync with the CRM conversation.
+ */
+export const sendParticipantReplyNotification = async (ticket, senderEmail, messageBody) => {
+    const pool = connectDB();
+    try {
+        // 1. Fetch primary customer and CC list
+        const [rows] = await pool.query(
+            `SELECT c.email as primary_email, cv.cc_emails, cv.id as conv_id
+             FROM tickets t
+             LEFT JOIN customers c ON t.customer_id = c.id
+             LEFT JOIN conversations cv ON cv.ticket_id = t.id AND cv.source_channel = 'email'
+             WHERE t.id = ?`,
+            [ticket.id]
+        );
+
+        if (!rows.length) return;
+        const { primary_email, cc_emails, conv_id } = rows[0];
+
+        // 2. Build recipient list (Primary + CCs)
+        const allRecipients = new Set();
+        if (primary_email) allRecipients.add(primary_email.toLowerCase().trim());
+        if (cc_emails) {
+            cc_emails.split(',').forEach(e => allRecipients.add(e.toLowerCase().trim()));
+        }
+
+        // 3. Remove the person who just replied to avoid "echo" notification
+        if (senderEmail) allRecipients.delete(senderEmail.toLowerCase().trim());
+
+        if (allRecipients.size === 0) {
+            logger.info(`[EmailService] No other participants to notify for ${ticket.ticket_number}`);
+            return;
+        }
+
+        // 4. Fetch the full trail for context
+        const trailHtml = await getConversationTrailHtml(pool, ticket.id);
+        const threadId = `<${ticket.ticket_number}@ticketcrm.local>`;
+        const formattedMsg = (messageBody || '').replace(/\n/g, '<br/>');
+
+        const mailOptions = {
+            from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
+            to: Array.from(allRecipients).join(', '),
+            subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
+            headers: {
+                'In-Reply-To': threadId,
+                'References': threadId,
+            },
+            html: `
+              <div style="font-family: sans-serif; padding: 20px; color: #333;">
+                <p style="font-size: 14px; color: #475569; margin-bottom: 20px;">
+                  New update on ticket <strong>${ticket.ticket_number}</strong>:
+                </p>
+                <div style="background: #f8fafc; padding: 15px; border-left: 4px solid #3b82f6; border-radius: 4px; margin-bottom: 25px;">
+                  ${formattedMsg}
+                </div>
+                
+                <h4 style="color: #64748b; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px;">Conversation History</h4>
+                ${trailHtml}
+                
+                <p style="font-size: 12px; color: #94a3b8; margin-top: 30px; border-top: 1px solid #f1f5f9; padding-top: 10px;">
+                  To reply, respond directly to this email. All participants will be notified.
+                </p>
+              </div>
+            `
+        };
+
+        await transporter.sendMail(mailOptions);
+        logger.info(`📧 Sync notification sent to ${allRecipients.size} participant(s) for ${ticket.ticket_number}`);
+
+    } catch (err) {
+        logger.error(`❌ Failed to send participant sync notification: ${err.message}`);
+    }
+};
+
+/**
  * Send notification to customer about ticket status update
  */
 export const sendTicketStatusNotification = async (ticket, customerEmail, newStatus) => {
