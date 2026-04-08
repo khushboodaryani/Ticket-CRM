@@ -25,7 +25,7 @@ router.get("/", getTickets);
 router.get("/:id", getTicketById);
 router.post("/", upload.single("attachment"), createTicket);
 router.put("/:id", upload.single("attachment"), updateTicket);
-router.post("/:id/escalate", requireRole("superadmin", "gm", "manager", "tl"), escalateTicket);
+router.post("/:id/escalate", requireRole("superadmin", "gm", "manager", "tl", "agent"), escalateTicket);
 router.put("/:id/sla-hold", requireRole("superadmin", "manager"), slaHold);
 
 // Queue assignment

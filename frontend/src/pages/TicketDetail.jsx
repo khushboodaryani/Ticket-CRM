@@ -190,7 +190,7 @@ export default function TicketDetail() {
     if (!ticket) return <><Topbar title="Ticket Detail" /><div className="page-body"><div className="empty-state">Ticket not found</div></div></>
 
     const isOverdue = ticket.etr && new Date(ticket.etr) < new Date() && !['resolved', 'closed'].includes(ticket.status)
-    const canEscalate = ['superadmin', 'gm', 'manager', 'tl'].includes(user?.role)
+    const canEscalate = ['superadmin', 'gm', 'manager', 'tl', 'agent'].includes(user?.role)
     const priColor = PRIORITY_COLORS[ticket.priority] || '#6b7280'
     const escColor = ESCALATION_COLORS[ticket.escalation_level] || '#3b82f6'
     const doneTasks = tasks.filter(t => t.is_done).length

@@ -46,6 +46,18 @@ export default function Users() {
         setSaving(false)
     }
 
+    const handleToggleStatus = async (userToToggle) => {
+        const action = userToToggle.is_active ? 'deactivate' : 'activate'
+        if (!window.confirm(`Are you sure you want to ${action} ${userToToggle.name}?`)) return
+        try {
+            await api.put(`/users/${userToToggle.id}`, { is_active: !userToToggle.is_active })
+            toast.success(`User ${action}d!`)
+            load()
+        } catch (err) {
+            toast.error(err.response?.data?.message || `Failed to ${action} user`)
+        }
+    }
+
     const filtered = users.filter(u => !search || u.name?.toLowerCase().includes(search.toLowerCase()) || u.email?.toLowerCase().includes(search.toLowerCase()))
 
     const managerUsers = users.filter(u => ['superadmin', 'gm', 'manager', 'tl'].includes(u.role))
@@ -85,7 +97,20 @@ export default function Users() {
                                                 <td style={{ fontSize: 13, color: 'var(--text-muted)' }}>{u.reporting_to_name || '—'}</td>
                                                 <td>{u.is_active ? <span className="badge badge-resolved">Active</span> : <span className="badge badge-closed">Inactive</span>}</td>
                                                 <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{new Date(u.created_at).toLocaleDateString('en-IN')}</td>
-                                                <td><button className="btn btn-secondary btn-sm" onClick={() => openEdit(u)}>Edit</button></td>
+                                                <td>
+                                                    <div style={{ display: 'flex', gap: 6 }}>
+                                                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(u)}>Edit</button>
+                                                        {isSuperAdmin && u.id !== currentUser?.id && (
+                                                            <button 
+                                                                className={`btn btn-sm ${u.is_active ? 'btn-danger' : 'btn-primary'}`}
+                                                                onClick={() => handleToggleStatus(u)}
+                                                                style={{ fontSize: 11, padding: '4px 8px' }}
+                                                            >
+                                                                {u.is_active ? 'Deactivate' : 'Activate'}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </td>
                                             </tr>
                                         ))}
                             </tbody>
