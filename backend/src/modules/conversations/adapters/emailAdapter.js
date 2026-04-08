@@ -132,25 +132,25 @@ export const send = async (customerEmail, data) => {
     }
 
     const pool = connectDB();
-    
+
     try {
-        let senderName = "Support Team";
-        let signature = "";
+        let senderName = 'Support Team';
+        let signature = '';
 
         if (data.senderId) {
-            const [users] = await pool.query(
-                "SELECT name, signature FROM users WHERE id = ?",
-                [data.senderId]
-            );
+            const [users] = await pool.query('SELECT name, signature FROM users WHERE id = ?', [data.senderId]);
             if (users.length) {
                 senderName = users[0].name;
-                signature = users[0].signature || "";
+                signature = users[0].signature || '';
             }
         }
 
         // Fetch ticket details
         const [tickets] = await pool.query(
-            `SELECT ticket_number, category, priority FROM tickets WHERE id = ? LIMIT 1`,
+            `SELECT t.ticket_number, t.category, t.priority, c.id as conv_id
+             FROM tickets t
+             LEFT JOIN conversations c ON c.ticket_id = t.id AND c.source_channel = 'email'
+             WHERE t.id = ? LIMIT 1`,
             [data.ticketId]
         );
 
@@ -162,19 +162,30 @@ export const send = async (customerEmail, data) => {
         const ticket = tickets[0];
         const formattedMessage = data.message.replace(/\n/g, '<br/>');
 
-        // Fetch full conversation trail (all messages + activity events)
+        // Load CC participants from conversation record
+        let ccList = [];
+        if (ticket.conv_id) {
+            const [convRow] = await pool.query('SELECT cc_emails FROM conversations WHERE id = ?', [ticket.conv_id]);
+            const ccRaw = convRow[0]?.cc_emails || '';
+            ccList = ccRaw.split(',').map(e => e.trim()).filter(Boolean);
+        }
+
+        // Full conversation trail for context
         const trailHtml = await getConversationTrailHtml(pool, data.ticketId);
 
-        // Email threading headers - reference the original ticket message
-        const originalMessageId = `<${ticket.ticket_number}@ticketcrm.local>`;
+        // Threading header — subject always includes [TKT-XXXX] so customer
+        // clicking Reply keeps the ticket number in the subject line.
+        // Gmail rewrites Message-ID but subject-based threading still works.
+        const threadRef = `<${ticket.ticket_number}@ticketcrm.local>`;
 
         const mailOptions = {
             from: `"Support Team" <${process.env.EMAIL_USER}>`,
             to: customerEmail,
+            cc: ccList.length ? ccList.join(', ') : undefined,
             subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
             headers: {
-                'In-Reply-To': originalMessageId,
-                'References': originalMessageId,
+                'In-Reply-To': threadRef,
+                'References': threadRef,
             },
             html: `
                 <div style="font-family: sans-serif; padding: 20px; color: #333;">
@@ -186,13 +197,10 @@ export const send = async (customerEmail, data) => {
                     <div style="background: white; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; margin: 20px 0; white-space: pre-wrap; line-height: 1.6;">
                         ${formattedMessage}
                     </div>
-
                     ${signature ? `<div style="margin-top: 20px; color: #64748b; font-size: 13px; border-top: 1px solid #f1f5f9; padding-top: 10px; white-space: pre-line;">--<br/>${signature}</div>` : ''}
-
                     ${trailHtml}
-
                     <p style="font-size: 13px; color: #666; margin-top: 24px;">
-                        To reply, simply respond to this email. Your response will be added to the ticket conversation.
+                        To reply, simply respond to this email — your message will be automatically added to the ticket thread.
                     </p>
                     <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
                     <p style="font-size: 12px; color: #999;">
@@ -205,10 +213,10 @@ export const send = async (customerEmail, data) => {
         };
 
         await transporter.sendMail(mailOptions);
-        logger.info(`📧 [EmailAdapter] Reply sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
+        logger.info(`📧 [EmailAdapter] Reply sent to ${customerEmail}${ccList.length ? ` (CC: ${ccList.join(', ')})` : ''} for ticket ${ticket.ticket_number}`);
 
     } catch (error) {
-        logger.error(`❌ [EmailAdapter] Failed to send email: ${error.message}`);
+        logger.error(`❌ [EmailAdapter] Failed to send reply email: ${error.message}`);
         throw error;
     }
 };
