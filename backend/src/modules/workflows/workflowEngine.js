@@ -19,13 +19,68 @@ export const initWorkflowEngine = () => {
     triggers.forEach(trigger => {
         workflowEvents.on(trigger, async (data) => {
             try {
+                // 1. Core Workflow Processing (Business Rules)
                 await processWorkflows(trigger, data);
+
+                // 2. Automated Communication Hooks
+                if (trigger === 'status_changed') {
+                    await handleStatusChangeNotification(data);
+                } else if (trigger === 'ticket_created') {
+                    await handleTicketCreatedNotification(data);
+                }
             } catch (err) {
                 logger.error(`❌ Workflow execution error [${trigger}]:`, err.message);
             }
         });
     });
 };
+
+/**
+ * Handle sending acknowledgement emails for new tickets
+ */
+async function handleTicketCreatedNotification({ ticketId }) {
+    const pool = connectDB();
+    const [rows] = await pool.query(
+        `SELECT t.*, c.email as customer_email 
+         FROM tickets t 
+         LEFT JOIN customers c ON t.customer_id = c.id 
+         WHERE t.id = ?`,
+        [ticketId]
+    );
+
+    const ticket = rows[0];
+    if (ticket && ticket.customer_email) {
+        const { sendTicketNotification } = await import("../notifications/emailService.js");
+        await sendTicketNotification(ticket, ticket.customer_email);
+        logger.info(`📧 Acknowledgement email sent to ${ticket.customer_email} for new ticket ${ticket.ticket_number}`);
+    }
+}
+
+/**
+ * Handle sending status change emails to customers
+ */
+async function handleStatusChangeNotification({ ticketId, payload }) {
+    const pool = connectDB();
+    const [rows] = await pool.query(
+        `SELECT t.*, c.email as customer_email 
+         FROM tickets t 
+         LEFT JOIN customers c ON t.customer_id = c.id 
+         WHERE t.id = ?`,
+        [ticketId]
+    );
+
+    const ticket = rows[0];
+    if (ticket && ticket.customer_email) {
+        const { sendTicketStatusNotification } = await import("../notifications/emailService.js");
+        await sendTicketStatusNotification(
+            ticket, 
+            ticket.customer_email, 
+            payload.old_status, 
+            payload.new_status
+        );
+        logger.info(`📧 Status change email sent to ${ticket.customer_email} for ${ticket.ticket_number}`);
+    }
+}
 
 /**
  * Process all active workflows for a specific trigger

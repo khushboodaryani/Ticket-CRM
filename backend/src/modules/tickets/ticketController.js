@@ -254,12 +254,7 @@ export const createTicket = async (req, res) => {
             });
         }
 
-        // Send email notification with conversation trail
-        if (customerEmail) {
-            import("../notifications/emailService.js").then(module => {
-                module.sendTicketNotification({ id: ticketId, ticket_number, category, priority, description, etr }, customerEmail);
-            });
-        }
+        // Event-driven acknowledgement is handled by workflowEngine -> ticket_created
 
         // Emit workflow event
         workflowEvents.emit('ticket_created', {
@@ -354,11 +349,7 @@ export const updateTicket = async (req, res) => {
                 payload: { old_status: existing[0].status, new_status: status }
             });
 
-            if (existing[0].customer_email) {
-                // Async send status notification
-                const ticketObj = { ...existing[0], category: category || existing[0].category };
-                sendTicketStatusNotification(ticketObj, existing[0].customer_email, status).catch(e => logger.error(`Status Email Fail: ${e.message}`));
-            }
+            // Event-driven status change is handled by workflowEngine -> status_changed
         }
 
         return res.json({ success: true, message: "Ticket updated." });

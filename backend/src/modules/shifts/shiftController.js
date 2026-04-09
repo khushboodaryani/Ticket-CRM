@@ -106,3 +106,21 @@ export const updateShiftMembers = async (req, res) => {
         return res.status(500).json({ success: false, message: "Server error." });
     }
 };
+
+// DELETE /api/shifts/:id
+export const deleteShift = async (req, res) => {
+    try {
+        const pool = connectDB();
+        // Shift members will be deleted automatically if cascade is set, 
+        // but we'll do it explicitly for safety or if FK isn't CASCADE.
+        await pool.query(`DELETE FROM shift_members WHERE shift_id=?`, [req.params.id]);
+        const [result] = await pool.query(`DELETE FROM shifts WHERE id=?`, [req.params.id]);
+        
+        if (result.affectedRows === 0) return res.status(404).json({ success: false, message: "Shift not found." });
+        
+        return res.json({ success: true, message: "Shift deleted successfully." });
+    } catch (err) {
+        console.error("deleteShift:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};

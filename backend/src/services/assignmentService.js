@@ -21,43 +21,43 @@ export const getShiftAssignee = async (priority = 'P3') => {
     try {
         const now = moment().tz(TZ);
         const currentTime = now.format('HH:mm:ss');
-        const currentDay = now.format('ddd').toUpperCase(); // SUN, MON, TUE...
+        const currentDay = now.format('ddd'); // Mon, Tue...
 
-        // 1. Identify active shifts covering this time and day
-        // Logic for overnight shifts (e.g. 22:00 to 06:00):
-        // (start < end AND now BETWEEN start AND end) OR (start > end AND (now >= start OR now <= end))
-        const [shifts] = await pool.query(
-            `SELECT id FROM agent_shifts 
-             WHERE is_active = 1 
-               AND FIND_IN_SET(?, REPLACE(days_of_week, ' ', '')) > 0
-               AND (
-                 (start_time <= end_time AND ? BETWEEN start_time AND end_time)
-                 OR 
-                 (start_time > end_time AND (? >= start_time OR ? <= end_time))
-               )`,
-            [currentDay, currentTime, currentTime, currentTime]
+        // 1. Identify active shifts for the current time/day
+        const [allShifts] = await pool.query(
+            `SELECT id, start_time, end_time, working_days FROM shifts`
         );
 
-        if (!shifts.length) {
-            logger.info(`[Assignment] No active shift found for ${currentDay} ${currentTime}`);
+        const activeShiftIds = allShifts.filter(s => {
+            let days = [];
+            try { days = JSON.parse(s.working_days); } catch { return false; }
+            if (!days.includes(currentDay)) return false;
+
+            const { start_time: start, end_time: end } = s;
+            if (start <= end) {
+                return (currentTime >= start && currentTime <= end);
+            } else {
+                return (currentTime >= start || currentTime <= end);
+            }
+        }).map(s => s.id);
+
+        if (activeShiftIds.length === 0) {
+            logger.info(`[Assignment] No active shifts found for ${currentDay} at ${currentTime}`);
             return null;
         }
 
-        const shiftIds = shifts.map(s => s.id);
-
-        // 2. Fetch all agents assigned to these shifts
-        // We calculate their "Load" (count of open/in_progress tickets) in the same query.
+        // 2. Identify all agents linked to these active shifts
         const [agents] = await pool.query(
             `SELECT u.id, u.name, u.is_online,
-                    (SELECT COUNT(*) FROM tickets t WHERE t.assigned_to = u.id AND t.status IN ('open', 'in_progress')) as load_count
+                (SELECT COUNT(*) FROM tickets t WHERE t.assigned_to = u.id AND t.status IN ('open', 'in_progress')) as load_count
              FROM users u
-             JOIN user_shifts us ON us.user_id = u.id
-             WHERE us.shift_id IN (?) AND u.role = 'agent' AND u.is_active = 1`,
-            [shiftIds]
+             JOIN shift_members sm ON sm.user_id = u.id
+             WHERE sm.shift_id IN (?) AND u.role = 'agent' AND u.is_active = 1`,
+            [activeShiftIds]
         );
 
         if (!agents.length) {
-            logger.info(`[Assignment] No active agents found in shift(s): ${shiftIds.join(',')}`);
+            logger.info(`[Assignment] No active agents found in shift(s): ${activeShiftIds.join(',')}`);
             return null;
         }
 

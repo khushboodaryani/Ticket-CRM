@@ -30,28 +30,36 @@ async function isHoliday(pool, dateStr) {
 
 // Check if current time is within an active shift for the ticket's assigned user
 async function isWithinShift(pool, userId) {
-    const dayAbbr = moment().tz(TZ).format("ddd"); // Mon, Tue …
+    const dayAbbr = moment().tz(TZ).format("ddd"); // Mon, Tue ...
     const curTime = moment().tz(TZ).format("HH:mm:ss");
 
     const [shifts] = await pool.query(
         `SELECT s.start_time, s.end_time, s.working_days
-     FROM shifts s
-     JOIN shift_members sm ON sm.shift_id = s.id
-     WHERE sm.user_id = ?`,
+         FROM shifts s
+         JOIN shift_members sm ON sm.shift_id = s.id
+         WHERE sm.user_id = ?`,
         [userId]
     );
 
     for (const shift of shifts) {
-        let workDays;
-        try { workDays = JSON.parse(shift.working_days); } catch { workDays = []; }
-        if (!workDays.includes(dayAbbr)) continue;
-        if (curTime >= shift.start_time && curTime <= shift.end_time) return true;
+        let days = [];
+        try { days = JSON.parse(shift.working_days); } catch { continue; }
+        if (!days.includes(dayAbbr)) continue;
+
+        const { start_time: start, end_time: end } = shift;
+        // Handle overnight shifts
+        if (start <= end) {
+            if (curTime >= start && curTime <= end) return true;
+        } else {
+            if (curTime >= start || curTime <= end) return true;
+        }
     }
     return false;
 }
 
 // Find the next escalation target user based on current assignee
 async function findNextAssignee(pool, currentAssigneeId) {
+    if (!currentAssigneeId) return null;
     const [rows] = await pool.query(
         `SELECT reporting_to FROM users WHERE id=? LIMIT 1`,
         [currentAssigneeId]

@@ -15,6 +15,34 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
+ * Helper to build threading headers for a specific ticket
+ */
+async function buildThreadHeaders(pool, ticketId) {
+    const [rows] = await pool.query(
+        `SELECT c.root_message_id, cm.message_id as last_msg_id, cm.reference_chain
+         FROM conversations c
+         LEFT JOIN conversation_messages cm ON cm.conversation_id = c.id
+         WHERE c.ticket_id = ? AND c.source_channel = 'email'
+         ORDER BY cm.created_at DESC LIMIT 1`,
+        [ticketId]
+    );
+
+    const domain = process.env.EMAIL_USER?.split('@')[1] || 'multycomm.com';
+    const newMessageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`;
+    
+    if (!rows.length || !rows[0].root_message_id) {
+        // First email in the thread
+        return { messageId: newMessageId, inReplyTo: undefined, references: undefined };
+    }
+
+    const { root_message_id, last_msg_id, reference_chain } = rows[0];
+    const inReplyTo = last_msg_id || root_message_id;
+    const references = ((reference_chain || '') + ' ' + inReplyTo).trim();
+
+    return { messageId: newMessageId, inReplyTo, references };
+}
+
+/**
  * Send notification to customer about new ticket — includes conversation trail
  */
 export const sendTicketNotification = async (ticket, customerEmail) => {
@@ -25,17 +53,17 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
         ? ticket.description.replace(/\n/g, '<br/>').replace(/\*/g, '')
         : '';
 
-    const messageId = `<${ticket.ticket_number}@ticketcrm.local>`;
-
-    // Fetch the trail (will show the 'created' activity event + original description message)
+    const headers = await buildThreadHeaders(pool, ticket.id);
     const trailHtml = ticket.id ? await getConversationTrailHtml(pool, ticket.id) : '';
 
     const mailOptions = {
-        from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
+        from: `"Support Team" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
         subject: `[${ticket.ticket_number}] ${ticket.category}`,
         headers: {
-            'Message-ID': messageId,
+            'Message-ID': headers.messageId,
+            'In-Reply-To': headers.inReplyTo,
+            'References': headers.references,
         },
         html: `
       <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
@@ -73,14 +101,12 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
 
 /**
  * Sync participant replies across all parties (Primary Customer + CCs)
- * Ensures everyone's Gmail inbox stays in sync with the CRM conversation.
  */
 export const sendParticipantReplyNotification = async (ticket, senderEmail, messageBody) => {
     const pool = connectDB();
     try {
-        // 1. Fetch primary customer and CC list
         const [rows] = await pool.query(
-            `SELECT c.email as primary_email, cv.cc_emails, cv.id as conv_id
+            `SELECT c.email as primary_email, cv.id as conv_id
              FROM tickets t
              LEFT JOIN customers c ON t.customer_id = c.id
              LEFT JOIN conversations cv ON cv.ticket_id = t.id AND cv.source_channel = 'email'
@@ -89,26 +115,23 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
         );
 
         if (!rows.length) return;
-        const { primary_email, cc_emails, conv_id } = rows[0];
+        const { primary_email, conv_id } = rows[0];
 
-        // 2. Build recipient list (Primary + CCs)
-        const allRecipients = new Set();
+        // Fetch CCs from Relational Model
+        const [participants] = await pool.query(
+            "SELECT email FROM conversation_participants WHERE conversation_id = ?",
+            [conv_id]
+        );
+        const allRecipients = new Set(participants.map(p => p.email.toLowerCase().trim()));
         if (primary_email) allRecipients.add(primary_email.toLowerCase().trim());
-        if (cc_emails) {
-            cc_emails.split(',').forEach(e => allRecipients.add(e.toLowerCase().trim()));
-        }
 
-        // 3. Remove the person who just replied to avoid "echo" notification
+        // Remove the person who just replied
         if (senderEmail) allRecipients.delete(senderEmail.toLowerCase().trim());
 
-        if (allRecipients.size === 0) {
-            logger.info(`[EmailService] No other participants to notify for ${ticket.ticket_number}`);
-            return;
-        }
+        if (allRecipients.size === 0) return;
 
-        // 4. Fetch the full trail for context
+        const headers = await buildThreadHeaders(pool, ticket.id);
         const trailHtml = await getConversationTrailHtml(pool, ticket.id);
-        const threadId = `<${ticket.ticket_number}@ticketcrm.local>`;
         const formattedMsg = (messageBody || '').replace(/\n/g, '<br/>');
 
         const mailOptions = {
@@ -116,8 +139,9 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
             to: Array.from(allRecipients).join(', '),
             subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
             headers: {
-                'In-Reply-To': threadId,
-                'References': threadId,
+                'Message-ID': headers.messageId,
+                'In-Reply-To': headers.inReplyTo,
+                'References': headers.references,
             },
             html: `
               <div style="font-family: sans-serif; padding: 20px; color: #333;">
@@ -128,7 +152,6 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
                   ${formattedMsg}
                 </div>
                 
-                <h4 style="color: #64748b; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px;">Conversation History</h4>
                 ${trailHtml}
                 
                 <p style="font-size: 12px; color: #94a3b8; margin-top: 30px; border-top: 1px solid #f1f5f9; padding-top: 10px;">
@@ -149,35 +172,41 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
 /**
  * Send notification to customer about ticket status update
  */
-export const sendTicketStatusNotification = async (ticket, customerEmail, newStatus) => {
+export const sendTicketStatusNotification = async (ticket, customerEmail, oldStatus, newStatus) => {
     if (!customerEmail) return;
 
     const pool = connectDB();
+    const headers = await buildThreadHeaders(pool, ticket.id);
     const trailHtml = await getConversationTrailHtml(pool, ticket.id);
 
     const statusLabel = newStatus.replace('_', ' ').toUpperCase();
-    const threadId = `<${ticket.ticket_number}@ticketcrm.local>`;
 
     const mailOptions = {
-        from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
+        from: `"Support Team" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
         subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
         headers: {
-            'In-Reply-To': threadId,
-            'References': threadId,
+            'Message-ID': headers.messageId,
+            'In-Reply-To': headers.inReplyTo,
+            'References': headers.references,
         },
         html: `
-      <div style="font-family: sans-serif; padding: 20px; color: #333;">
-        <h2 style="color: #4f8ef7;">Ticket Status Updated</h2>
-        <p>Hello,</p>
-        <p>Your ticket **${ticket.ticket_number}** has been updated to <strong>${statusLabel}</strong>.</p>
-        <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Ticket Number:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>Subject:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.category}</td></tr>
-          <tr><td style="padding: 8px; border-bottom: 1px solid #eee;"><strong>New Status:</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${statusLabel}</td></tr>
-        </table>
+      <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
+        <h2 style="color: #4f8ef7; margin-bottom: 4px;">Ticket Status Updated</h2>
+        <div style="background:#f8fafc; padding: 15px; border-radius:8px; border:1px solid #e2e8f0; margin: 20px 0;">
+            <p style="margin:0; font-size:14px; color:#1e293b;">
+                The status of ticket <strong>${ticket.ticket_number}</strong> has changed:
+            </p>
+            <div style="margin-top:12px;">
+                <span style="background:#e2e8f0; padding:4px 8px; border-radius:4px; font-size:12px; text-decoration:line-through;">${oldStatus.toUpperCase()}</span>
+                <span style="margin:0 10px; color:#64748b;">➔</span>
+                <span style="background:#0284c7; color:white; padding:4px 8px; border-radius:4px; font-size:12px; font-weight:bold;">${statusLabel}</span>
+            </div>
+        </div>
+        
         ${trailHtml}
-        <p>Regards,<br/>Team Multycomm</p>
+        
+        <p style="font-size: 13px; color: #64748b; margin-top:25px;">Regards,<br/>Team Multycomm</p>
       </div>
     `
     };

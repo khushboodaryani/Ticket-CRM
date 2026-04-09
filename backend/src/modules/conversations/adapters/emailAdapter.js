@@ -74,17 +74,17 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
         if (timeline.length === 0) return '';
 
         const rows = timeline.map(item => {
-            const dateStr = item.ts.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+            const dateStr = item.ts.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true });
 
             if (item.type === 'event') {
                 return `
                 <tr>
-                  <td style="padding:8px 12px; border-bottom:1px solid #f0f0f0;">
-                    <span style="display:inline-block;background:#f1f5f9;color:#475569;
-                                 font-size:11px;padding:3px 8px;border-radius:12px;">
-                      🔔 ${item.note}
-                    </span>
-                    <span style="font-size:10px;color:#94a3b8;margin-left:8px;">${dateStr}</span>
+                  <td style="padding:10px 15px; border-bottom:1px solid #f1f5f9;">
+                    <div style="display:inline-block; background:#f8fafc; border:1px solid #e2e8f0; 
+                                color:#64748b; font-size:11px; padding:4px 10px; border-radius:15px; font-weight:500;">
+                      📅 ${item.note}
+                    </div>
+                    <span style="font-size:10px; color:#94a3b8; margin-left:10px;">${dateStr}</span>
                   </td>
                 </tr>`;
             }
@@ -92,17 +92,15 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
             // message row
             const isAgent = item.senderType === 'agent';
             const bgColor = isAgent ? '#f0f9ff' : '#ffffff';
-            const borderColor = isAgent ? '#3b82f6' : '#e2e8f0';
-            const labelColor = isAgent ? '#1d4ed8' : '#374151';
+            const accentColor = isAgent ? '#0284c7' : '#64748b';
             return `
                 <tr>
-                  <td style="padding:10px 12px; border-bottom:1px solid #f0f0f0; background:${bgColor};">
-                    <p style="margin:0 0 4px 0; font-size:11px; color:${labelColor}; font-weight:600;">
-                      ${item.sender}
-                      <span style="font-weight:400;color:#94a3b8;margin-left:6px;">${dateStr}</span>
-                    </p>
-                    <div style="font-size:13px;color:#374151;line-height:1.6;
-                                border-left:3px solid ${borderColor};padding-left:10px;margin-top:4px;">
+                  <td style="padding:15px; border-bottom:1px solid #f1f5f9; background:${bgColor};">
+                    <div style="margin-bottom:8px;">
+                      <span style="font-size:12px; font-weight:700; color:#1e293b;">${item.sender}</span>
+                      <span style="font-size:11px; color:#94a3b8; margin-left:8px;">${dateStr}</span>
+                    </div>
+                    <div style="font-size:13px; color:#334155; line-height:1.6; border-left:3px solid ${accentColor}; padding-left:12px;">
                       ${item.body}
                     </div>
                   </td>
@@ -110,9 +108,11 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
         }).join('');
 
         return `
-        <div style="margin-top:20px; border-top:1px solid #e2e8f0; padding-top:10px;">
-          <table width="100%" cellpadding="0" cellspacing="0"
-                 style="background:#fff; font-family:sans-serif;">
+        <div style="margin-top:30px; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden;">
+          <div style="background:#f8fafc; padding:10px 15px; border-bottom:1px solid #e2e8f0; font-size:12px; font-weight:600; color:#475569;">
+             Conversation History
+          </div>
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
             ${rows}
           </table>
         </div>`;
@@ -125,8 +125,6 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
 
 /**
  * Send agent reply to customer via email
- * @param {string} customerEmail - Customer's email address
- * @param {object} data - { message: string, ticketNumber: string, ticketId: number }
  */
 export const send = async (customerEmail, data) => {
     if (!customerEmail || !data.message) {
@@ -148,9 +146,9 @@ export const send = async (customerEmail, data) => {
             }
         }
 
-        // Fetch ticket details
+        // 1. Fetch ticket and conversation metadata for threading
         const [tickets] = await pool.query(
-            `SELECT t.ticket_number, t.category, t.priority, c.id as conv_id
+            `SELECT t.ticket_number, t.subject, t.category, t.priority, c.id as conv_id, c.root_message_id
              FROM tickets t
              LEFT JOIN conversations c ON c.ticket_id = t.id AND c.source_channel = 'email'
              WHERE t.id = ? LIMIT 1`,
@@ -163,63 +161,107 @@ export const send = async (customerEmail, data) => {
         }
 
         const ticket = tickets[0];
-        const formattedMessage = data.message.replace(/\n/g, '<br/>');
+        const convId = ticket.conv_id;
+        const subjectLine = ticket.subject || ticket.category;
 
-        // Load CC participants from conversation record
-        let ccList = [];
-        if (ticket.conv_id) {
-            const [convRow] = await pool.query('SELECT cc_emails FROM conversations WHERE id = ?', [ticket.conv_id]);
-            const ccRaw = convRow[0]?.cc_emails || '';
-            ccList = ccRaw.split(',').map(e => e.trim()).filter(Boolean);
+        // 2. Build Threading Chain (Strict Logic)
+        const [lastMsg] = await pool.query(
+            `SELECT message_id, reference_chain FROM conversation_messages 
+             WHERE conversation_id = ? AND message_id IS NOT NULL 
+             ORDER BY created_at DESC LIMIT 1`,
+            [convId]
+        );
+
+        const domain = process.env.EMAIL_USER?.split('@')[1] || 'multycomm.com';
+        const newMessageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`;
+        let inReplyTo = ticket.root_message_id;
+        let references = ticket.root_message_id;
+
+        if (lastMsg.length) {
+            inReplyTo = lastMsg[0].message_id;
+            const prevChain = lastMsg[0].reference_chain || '';
+            references = (prevChain + ' ' + inReplyTo).trim();
         }
 
-        // Full conversation trail for context
-        const trailHtml = await getConversationTrailHtml(pool, data.ticketId);
+        // 3. Load & Sync Outbound Participants (Relational Model)
+        const [participants] = await pool.query(
+            "SELECT email FROM conversation_participants WHERE conversation_id = ? AND type = 'cc'",
+            [convId]
+        );
+        const ccList = participants.map(p => p.email).filter(Boolean);
 
-        // Threading header — subject always includes [TKT-XXXX] so customer
-        // clicking Reply keeps the ticket number in the subject line.
-        // Gmail rewrites Message-ID but subject-based threading still works.
-        const threadRef = `<${ticket.ticket_number}@ticketcrm.local>`;
+        // Store everyone we're sending TO + CC so we recognize them if they reply later
+        const recipientsToSync = [customerEmail, ...ccList].filter(Boolean);
+        for (const email of recipientsToSync) {
+            await pool.query(
+                "INSERT IGNORE INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'cc')",
+                [convId, email.toLowerCase().trim()]
+            );
+        }
+
+        // 4. Trail and Body
+        const trailHtml = await getConversationTrailHtml(pool, data.ticketId);
+        const formattedMessage = data.message.replace(/\n/g, '<br/>');
 
         const mailOptions = {
             from: `"Support Team" <${process.env.EMAIL_USER}>`,
             to: customerEmail,
             cc: ccList.length ? ccList.join(', ') : undefined,
-            subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
+            subject: `Re: [${ticket.ticket_number}] ${subjectLine}`,
             headers: {
-                'In-Reply-To': threadRef,
-                'References': threadRef,
+                'Message-ID': newMessageId,
+                'In-Reply-To': inReplyTo,
+                'References': references,
             },
             html: `
-                <div style="font-family: sans-serif; padding: 20px; color: #333;">
-                    <h3 style="color: #4f8ef7; margin-bottom: 10px;">Update on Your Ticket</h3>
-                    <p style="background: #f8f9fa; padding: 12px; border-left: 3px solid #4f8ef7; margin: 16px 0;">
-                        <strong>Ticket:</strong> ${ticket.ticket_number}<br/>
-                        <strong>Subject:</strong> ${ticket.category}
-                    </p>
-                    <div style="background: white; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; margin: 20px 0; white-space: pre-wrap; line-height: 1.6;">
+                <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 800px; margin: 0 auto;">
+                    <div style="border-bottom: 2px solid #f1f5f9; padding-bottom: 15px; margin-bottom: 20px;">
+                        <h2 style="color: #0f172a; margin: 0; font-size: 18px;">Ticket Update: ${ticket.ticket_number}</h2>
+                    </div>
+                    
+                    <div style="background: #ffffff; padding: 0; border-radius: 8px; line-height: 1.6;">
                         ${formattedMessage}
                     </div>
-                    ${signature ? `<div style="margin-top: 20px; color: #64748b; font-size: 13px; border-top: 1px solid #f1f5f9; padding-top: 10px; white-space: pre-line;">--<br/>${signature}</div>` : ''}
+
+                    ${signature ? `<div style="margin-top: 30px; color: #64748b; font-size: 13px; border-top: 1px solid #f1f5f9; padding-top: 15px; font-style: italic;">--<br/>${signature}</div>` : ''}
+                    
                     ${trailHtml}
-                    <p style="font-size: 13px; color: #666; margin-top: 24px;">
-                        To reply, simply respond to this email — your message will be automatically added to the ticket thread.
-                    </p>
-                    <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
-                    <p style="font-size: 12px; color: #999;">
-                        Regards,<br/>
-                        <strong>${senderName}</strong><br/>
-                        Team Multycomm
-                    </p>
+                    
+                    <div style="margin-top: 30px; padding: 15px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; font-size: 12px; color: #64748b;">
+                        <strong>Reply Tip:</strong> Respond directly to this email to update your ticket.
+                        <br/>Ticket subject: <em>${subjectLine}</em>
+                    </div>
                 </div>
             `
         };
 
-        await transporter.sendMail(mailOptions);
-        logger.info(`📧 [EmailAdapter] Reply sent to ${customerEmail}${ccList.length ? ` (CC: ${ccList.join(', ')})` : ''} for ticket ${ticket.ticket_number}`);
+        // 5. DB-FIRST PERSISTENCE (Step 1 of 2: Save to DB as pending/not-yet-sent)
+        const [msgResult] = await pool.query(
+            `INSERT INTO conversation_messages 
+             (conversation_id, sender_type, sender_id, sender_name, message_body, message_id, in_reply_to, reference_chain, is_sent)
+             VALUES (?, 'agent', ?, ?, ?, ?, ?, ?, 0)`,
+            [convId, data.senderId, senderName, data.message, newMessageId, inReplyTo, references]
+        );
+
+        // 6. SMTP TRANSMISSION
+        try {
+            await transporter.sendMail(mailOptions);
+            
+            // 7. Step 2 of 2: Mark as sent on success
+            await pool.query(
+                `UPDATE conversation_messages SET is_sent = 1 WHERE id = ?`,
+                [msgResult.insertId]
+            );
+
+            logger.info(`📧 [EmailAdapter] Reply sent and persisted for ${ticket.ticket_number} (ID: ${newMessageId})`);
+        } catch (mailErr) {
+            logger.error(`❌ [EmailAdapter] SMTP failed but message preserved: ${mailErr.message}`);
+            // We keep the record in DB (with is_sent=0) so the history trail is preserved
+            throw mailErr;
+        }
 
     } catch (error) {
-        logger.error(`❌ [EmailAdapter] Failed to send reply email: ${error.message}`);
+        logger.error(`❌ [EmailAdapter] Error in outbound flow: ${error.message}`);
         throw error;
     }
 };
