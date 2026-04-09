@@ -468,7 +468,12 @@ export default function TicketDetail() {
                             <div style={{ padding: '14px 16px', borderRadius: 10, background: 'var(--bg-input)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 12 }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                     <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>SLA Health</span>
-                                    <CountdownBadge etr={ticket.etr} paused={ticket.sla_paused === 1 || ticket.sla_paused_manual === 1} />
+                                    <CountdownBadge 
+                                        etr={ticket.etr} 
+                                        paused={ticket.sla_paused === 1 || ticket.sla_paused_manual === 1} 
+                                        status={ticket.status}
+                                        sla_state={ticket.sla_state}
+                                    />
                                 </div>
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
                                     <div>

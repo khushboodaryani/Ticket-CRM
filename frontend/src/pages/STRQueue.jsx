@@ -42,7 +42,7 @@ export default function STRQueue() {
                         <div key={name} className="stat-card">
                             <div className="stat-label">{name}</div>
                             <div className="stat-value">{tix.length}</div>
-                            <div className="stat-change">{tix.filter(t => new Date(t.etr) < now).length} overdue</div>
+                            <div className="stat-change">{tix.filter(t => new Date(t.etr) < now && t.sla_paused !== 1 && t.sla_paused_manual !== 1).length} overdue</div>
                         </div>
                     ))}
                 </div>
@@ -84,7 +84,12 @@ export default function STRQueue() {
                                             <td><span className={`role-badge role-${t.assigned_role}`}>{t.assigned_role}</span></td>
                                             <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t.str ? new Date(t.str).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</td>
                                             <td>
-                                                <CountdownBadge etr={t.etr} paused={t.sla_paused === 1 || t.sla_paused_manual === 1} />
+                                                <CountdownBadge 
+                                                    etr={t.etr} 
+                                                    paused={t.sla_paused === 1 || t.sla_paused_manual === 1} 
+                                                    status={t.status}
+                                                    sla_state={t.sla_state}
+                                                />
                                             </td>
                                             <td><span className={`badge badge-${t.status}`}>{t.status?.replace('_', ' ')}</span></td>
                                         </tr>

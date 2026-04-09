@@ -380,7 +380,12 @@ export default function Tickets() {
                                         <td><LevelBadge l={t.escalation_level} /></td>
                                         <td>{t.assigned_to_name || <span style={{ color: 'var(--text-muted)' }}>Unassigned</span>}</td>
                                         <td>
-                                            <CountdownBadge etr={t.etr} paused={t.sla_paused === 1 || t.sla_paused_manual === 1} />
+                                            <CountdownBadge 
+                                                etr={t.etr} 
+                                                paused={t.sla_paused === 1 || t.sla_paused_manual === 1} 
+                                                status={t.status}
+                                                sla_state={t.sla_state}
+                                            />
                                         </td>
                                         <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                                             {new Date(t.created_at).toLocaleString('en-IN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
