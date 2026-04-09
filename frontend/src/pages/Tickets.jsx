@@ -53,11 +53,12 @@ export default function Tickets() {
     const [tickets, setTickets] = useState([])
     const [queues, setQueues] = useState([])
     const [loading, setLoading] = useState(true)
-    const [filters, setFilters] = useState({ status: '', priority: '', escalation_level: '', queue_id: '', source: '', search: '' })
+    const [filters, setFilters] = useState({ status: '', priority: '', escalation_level: '', queue_id: '', source: '', search: '', assigned_to: '', startDate: '', endDate: '' })
     const [page, setPage] = useState(1)
+    const [limit, setLimit] = useState(20)
     const [total, setTotal] = useState(0)
+    const [agents, setAgents] = useState([])
     const navigate = useNavigate()
-    const limit = 15
 
     // Bulk selection state
     const [selected, setSelected] = useState(new Set())
@@ -74,6 +75,13 @@ export default function Tickets() {
         } catch { }
     }
 
+    const fetchAgents = async () => {
+        try {
+            const { data } = await api.get('/users?is_active=true')
+            setAgents(data.users || [])
+        } catch { }
+    }
+
     const fetchTickets = async () => {
         setLoading(true)
         try {
@@ -82,6 +90,10 @@ export default function Tickets() {
             if (filters.priority) params.priority = filters.priority
             if (filters.escalation_level) params.escalation_level = filters.escalation_level
             if (filters.queue_id) params.queue_id = filters.queue_id
+            if (filters.assigned_to) params.assigned_to = filters.assigned_to
+            if (filters.startDate) params.startDate = filters.startDate
+            if (filters.endDate) params.endDate = filters.endDate
+
             const { data } = await api.get('/tickets', { params })
             setTickets(data.tickets)
             setTotal(data.pagination.total)
@@ -89,8 +101,8 @@ export default function Tickets() {
         setLoading(false)
     }
 
-    useEffect(() => { fetchQueues() }, [])
-    useEffect(() => { fetchTickets() }, [page, filters])
+    useEffect(() => { fetchQueues(); fetchAgents(); }, [])
+    useEffect(() => { fetchTickets() }, [page, filters, limit])
     
     useEffect(() => {
         if (!socket) return;
@@ -267,6 +279,43 @@ export default function Tickets() {
                                 <option key={k} value={k}>{s.label}</option>
                             ))}
                         </select>
+                        <select className="filter-select" value={filters.assigned_to} onChange={e => { setFilters(p => ({ ...p, assigned_to: e.target.value })); setPage(1) }}>
+                            <option value="">Filter by Agent (All)</option>
+                            {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </select>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>From</span>
+                            <input
+                                type="date"
+                                className="filter-select"
+                                value={filters.startDate}
+                                onChange={e => { setFilters(p => ({ ...p, startDate: e.target.value })); setPage(1) }}
+                            />
+                            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>To</span>
+                            <input
+                                type="date"
+                                className="filter-select"
+                                value={filters.endDate}
+                                onChange={e => { setFilters(p => ({ ...p, endDate: e.target.value })); setPage(1) }}
+                            />
+                        </div>
+                        <select className="filter-select" value={limit} onChange={e => { setLimit(Number(e.target.value)); setPage(1) }}>
+                            <option value="10">10 per page</option>
+                            <option value="20">20 per page</option>
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                        </select>
+                        <button 
+                            className="btn btn-secondary btn-sm" 
+                            style={{ height: 38, padding: '0 12px' }}
+                            onClick={() => {
+                                setFilters({ status: '', priority: '', escalation_level: '', queue_id: '', source: '', search: '', assigned_to: '', startDate: '', endDate: '' });
+                                setPage(1);
+                                setLimit(20);
+                            }}
+                        >
+                            Reset
+                        </button>
                     </div>
 
                     <div className="table-wrap">

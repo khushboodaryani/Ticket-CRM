@@ -26,7 +26,7 @@ const buildRoleFilter = (user) => {
 export const getTickets = async (req, res) => {
     try {
         const pool = connectDB();
-        const { status, priority, escalation_level, customer_id, project_id, queue_id, page = 1, limit = 20 } = req.query;
+        const { status, priority, escalation_level, customer_id, project_id, queue_id, assigned_to, startDate, endDate, page = 1, limit = 20 } = req.query;
         const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
 
         let filters = [`(${roleWhere})`];
@@ -38,6 +38,9 @@ export const getTickets = async (req, res) => {
         if (customer_id) { filters.push("t.customer_id=?"); params.push(customer_id); }
         if (project_id) { filters.push("t.project_id=?"); params.push(project_id); }
         if (queue_id) { filters.push("t.queue_id=?"); params.push(queue_id); }
+        if (assigned_to) { filters.push("t.assigned_to=?"); params.push(assigned_to); }
+        if (startDate) { filters.push("DATE(t.created_at) >= ?"); params.push(startDate); }
+        if (endDate) { filters.push("DATE(t.created_at) <= ?"); params.push(endDate); }
 
         const whereClause = filters.join(" AND ");
         const offset = (Number(page) - 1) * Number(limit);
