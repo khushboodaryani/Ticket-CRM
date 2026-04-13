@@ -1,14 +1,17 @@
 -- backend/src/db/migrations/v12_enterprise_hardening.sql
 
--- 1. Add Unique Constraint to email_logs for Idempotency
--- This prevents the same message-id from being logged/processed twice at the DB level
-ALTER TABLE email_logs MODIFY message_id VARCHAR(255) NOT NULL;
-CREATE UNIQUE INDEX unique_log_message_id ON email_logs(message_id);
+-- 1. Ensure Ticket Numbers are uniquely indexed for high-scale lookups
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_ticket_number ON tickets(ticket_number);
 
--- 2. Ensure message_id is indexed for fast lookup in participant fallback scenarios
--- (v11 already added INDEX, this is a safety check)
--- CREATE UNIQUE INDEX unique_message_id ON conversation_messages(message_id); -- ALREADY EXISTS FROM V11
+-- 2. Ensure Customer Emails are indexed for fast identification
+CREATE INDEX IF NOT EXISTS idx_customer_email ON customers(email);
 
--- 3. Add index to created_at for chronological sorting performance in trails
-CREATE INDEX idx_msg_created_at ON conversation_messages(created_at);
-CREATE INDEX idx_act_created_at ON ticket_activities(created_at);
+-- 3. Upgrade email_logs.message_id to UNIQUE to prevent race conditions in poller
+-- We use a Try/Catch style approach if the index already exists as non-unique
+DROP INDEX IF EXISTS idx_msg_id ON email_logs;
+CREATE UNIQUE INDEX uidx_email_msg_id ON email_logs(message_id);
+
+-- 4. Optimization for conversation participant lookups
+CREATE INDEX IF NOT EXISTS idx_participant_email_type ON conversation_participants(email, type);
+
+SELECT 'Enterprise Hardening Migration Applied!' AS result;

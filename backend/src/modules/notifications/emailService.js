@@ -45,7 +45,7 @@ async function buildThreadHeaders(pool, ticketId) {
 /**
  * Send notification to customer about new ticket — includes conversation trail
  */
-export const sendTicketNotification = async (ticket, customerEmail) => {
+export const sendTicketNotification = async (ticket, customerEmail, rootMessageId = null) => {
     if (!customerEmail) return;
 
     const pool = connectDB();
@@ -53,17 +53,35 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
         ? ticket.description.replace(/\n/g, '<br/>').replace(/\*/g, '')
         : '';
 
-    const headers = await buildThreadHeaders(pool, ticket.id);
-    const trailHtml = ticket.id ? await getConversationTrailHtml(pool, ticket.id) : '';
+    let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
+    let trailHtml = '';
+    try {
+        if (rootMessageId) {
+            // If explicit root message provided, reply directly to it
+            const domain = process.env.EMAIL_USER?.split('@')[1] || 'multycomm.com';
+            headers = {
+                messageId: `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`,
+                inReplyTo: rootMessageId,
+                references: rootMessageId
+            };
+        } else {
+            headers = await buildThreadHeaders(pool, ticket.id);
+        }
+        if (ticket.id) trailHtml = await getConversationTrailHtml(pool, ticket.id);
+    } catch (trailErr) {
+        logger.error(`[EmailService] Trail/header build failed for ticket ${ticket.ticket_number}: ${trailErr.message}`);
+    }
 
     const mailOptions = {
         from: `"Support Team" <${process.env.EMAIL_USER}>`,
         to: customerEmail,
-        subject: `[${ticket.ticket_number}] ${ticket.category}`,
+        subject: `Ticket Received: ${ticket.category} [${ticket.ticket_number}]`,
         headers: {
             'Message-ID': headers.messageId,
             'In-Reply-To': headers.inReplyTo,
             'References': headers.references,
+            'Auto-Submitted': 'auto-generated',
+            'X-Auto-Response-Suppress': 'All'
         },
         html: `
       <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
@@ -103,6 +121,10 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
  * Sync participant replies across all parties (Primary Customer + CCs)
  */
 export const sendParticipantReplyNotification = async (ticket, senderEmail, messageBody) => {
+    if (!ticket?.id) {
+        logger.warn('[EmailService] sendParticipantReplyNotification called without ticket.id');
+        return;
+    }
     const pool = connectDB();
     try {
         const [rows] = await pool.query(
@@ -142,6 +164,8 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
                 'Message-ID': headers.messageId,
                 'In-Reply-To': headers.inReplyTo,
                 'References': headers.references,
+                'Auto-Submitted': 'auto-generated',
+                'X-Auto-Response-Suppress': 'All'
             },
             html: `
               <div style="font-family: sans-serif; padding: 20px; color: #333;">
@@ -176,8 +200,14 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
     if (!customerEmail) return;
 
     const pool = connectDB();
-    const headers = await buildThreadHeaders(pool, ticket.id);
-    const trailHtml = await getConversationTrailHtml(pool, ticket.id);
+    let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
+    let trailHtml = '';
+    try {
+        headers = await buildThreadHeaders(pool, ticket.id);
+        trailHtml = await getConversationTrailHtml(pool, ticket.id);
+    } catch (trailErr) {
+        logger.error(`[EmailService] Trail/header build failed for status notification ${ticket.ticket_number}: ${trailErr.message}`);
+    }
 
     const statusLabel = newStatus.replace('_', ' ').toUpperCase();
 
@@ -189,6 +219,8 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
             'Message-ID': headers.messageId,
             'In-Reply-To': headers.inReplyTo,
             'References': headers.references,
+            'Auto-Submitted': 'auto-generated',
+            'X-Auto-Response-Suppress': 'All'
         },
         html: `
       <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
@@ -267,6 +299,10 @@ export const sendEmergencyBroadcast = async (ticket) => {
                 from: `"Ticket CRM Emergency" <${process.env.EMAIL_USER}>`,
                 bcc: emails.join(','), // BCC to not expose everyone's email and keep headers clean
                 subject: `🚨 EMERGENCY P1 TICKET: [${ticket.ticket_number}] ${ticket.category}`,
+                headers: {
+                    'Auto-Submitted': 'auto-generated',
+                    'X-Auto-Response-Suppress': 'All'
+                },
                 html: `
                   <div style="font-family: sans-serif; padding: 20px; color: #333; border: 2px solid red;">
                     <h2 style="color: red;">🚨 EMERGENCY DETECTED</h2>
@@ -321,6 +357,10 @@ export const sendEmergencyClaimedBroadcast = async (ticket, claimedByName) => {
                 from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
                 bcc: emails.join(','),
                 subject: `✅ UPDATE - P1 TICKET CLAIMED: [${ticket.ticket_number}]`,
+                headers: {
+                    'Auto-Submitted': 'auto-generated',
+                    'X-Auto-Response-Suppress': 'All'
+                },
                 html: `
                   <div style="font-family: sans-serif; padding: 20px; color: #333; border: 2px solid #16a34a; background-color: #f0fdf4;">
                     <h2 style="color: #16a34a;">✅ EMERGENCY CLAIMED - STAND DOWN</h2>

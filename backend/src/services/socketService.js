@@ -84,6 +84,9 @@ export const emitToUser = (userId, event, data) => {
  */
 export const broadcast = (event, data) => {
     if (io) {
+        logger.info(`[Socket] 📢 Broadcasting event: ${event} ${data.ticket_id ? `(Ticket: ${data.ticket_id})` : ''}`);
         io.emit(event, data);
+    } else {
+        logger.warn(`[Socket] ⚠️ Broadcast failed: socket.io not initialized. Event: ${event}`);
     }
 };

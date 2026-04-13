@@ -99,47 +99,50 @@ export const getTicketById = async (req, res) => {
         if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
         // -- IDEA 3: 1st Responder Auto-Assign (Atomic Claim) --
-        // If an unassigned P1 ticket is viewed by an authenticated user, they instantly become the owner.
-        // EXCEPTION: The creator does NOT auto-claim their own ticket. This prevents the "Red Alert" 
-        // from vanishing for everyone else if the creator immediately navigates to the ticket page.
         if (rows[0].priority === 'P1' && !rows[0].assigned_to && req.user && rows[0].created_by !== req.user.userId) {
-            logger.info(`🚨 P1 Claim Attempt by ${req.user.name} (ID: ${req.user.userId}) for TKT: ${rows[0].ticket_number}`);
+            const lockName = `p1_claim_${req.params.id}`;
+            const [lockRes] = await pool.query(`SELECT GET_LOCK(?, 5) as locked`, [lockName]);
             
-            // Atomic update ensures only ONE person can claim it first if two agents open the page at the same time
-            const [updateResult] = await pool.query(
-                `UPDATE tickets SET assigned_to = ? WHERE id = ? AND assigned_to IS NULL`, 
-                [req.user.userId, req.params.id]
-            );
-            
-            logger.info(`   -> Update affectedRows: ${updateResult.affectedRows}`);
-            
-            // Only proceed with side-effects if WE were the ones who actually stole the null slot!
-            if (updateResult.affectedRows > 0) {
-                // 1. Log exactly how it was claimed
-                await pool.query(
-                    `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'updated',?,?)`,
-                    [req.params.id, req.user.userId, `Emergency ticket instantly auto-claimed by viewing`]
-                );
+            try {
+                if (lockRes[0]?.locked) {
+                    // Re-check unassigned state under lock
+                    const [recheck] = await pool.query(`SELECT assigned_to, ticket_number FROM tickets WHERE id = ?`, [req.params.id]);
+                    
+                    if (recheck.length && !recheck[0].assigned_to) {
+                        logger.info(`🚨 P1 Claim SECURED by ${req.user.name} for TKT: ${recheck[0].ticket_number}`);
+                        
+                        const [updateResult] = await pool.query(
+                            `UPDATE tickets SET assigned_to = ? WHERE id = ? AND assigned_to IS NULL`, 
+                            [req.user.userId, req.params.id]
+                        );
+                        
+                        if (updateResult.affectedRows > 0) {
+                            // Side-effects are now protected by the lock
+                            await pool.query(
+                                `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'updated',?,?)`,
+                                [req.params.id, req.user.userId, `Emergency ticket auto-claimed by viewing`]
+                            );
 
-                // 2. Hide the Red Modal on everyone else's screen via WebSocket
-                try {
-                    const socketModule = await import("../../services/socketService.js");
-                    socketModule.broadcast("emergency_claimed", { 
-                        ticket_id: req.params.id, 
-                        assigned_to_name: req.user.name 
-                    });
-                } catch (e) { logger.error("Claim socket broadcast failed: " + e.message); }
+                            try {
+                                const socketModule = await import("../../services/socketService.js");
+                                socketModule.broadcast("emergency_claimed", { 
+                                    ticket_id: req.params.id, 
+                                    assigned_to_name: req.user.name 
+                                });
+                            } catch (e) { logger.error("Claim socket broadcast failed: " + e.message); }
 
-                // 3. Fire the Green "Stand-Down" Email Blast + Bell DB Notifications
-                try {
-                    const m = await import("../notifications/emailService.js");
-                    await m.sendEmergencyClaimedBroadcast(rows[0], req.user.name);
-                    logger.info(`🔥 Stand-Down Broadcast triggered for TKT: ${rows[0].ticket_number}`);
-                } catch (e) { logger.error("Claim email broadcast failed: " + e.message); }
+                            try {
+                                const m = await import("../notifications/emailService.js");
+                                await m.sendEmergencyClaimedBroadcast(rows[0], req.user.name);
+                            } catch (e) { logger.error("Claim email broadcast failed: " + e.message); }
 
-                // 4. Update the response object so the frontend visually sees the assignment
-                rows[0].assigned_to = req.user.userId;
-                rows[0].assigned_to_name = req.user.name;
+                            rows[0].assigned_to = req.user.userId;
+                            rows[0].assigned_to_name = req.user.name;
+                        }
+                    }
+                }
+            } finally {
+                await pool.query(`SELECT RELEASE_LOCK(?)`, [lockName]);
             }
         }
 
@@ -668,7 +671,7 @@ export const importTickets = async (req, res) => {
                 const cleanPhone = row.phone?.replace(/[\[\]]/g, "").trim();
 
                 if (cleanEmail) {
-                    const tempTicket = { ticket_number: ticketNumber, category: row.category, priority, description: row.description, etr };
+                    const tempTicket = { id: ticketId, ticket_number: ticketNumber, category: row.category, priority, description: row.description, etr };
                     sendTicketNotification(tempTicket, cleanEmail).catch(e => logger.error(`Import Email Notify Fail: ${e.message}`));
                 }
 
@@ -766,7 +769,7 @@ export const bulkUpdateTickets = async (req, res) => {
         if (status) {
             for (const r of rows) {
                 if (r.customer_email) {
-                    sendTicketStatusNotification(r, r.customer_email, status).catch(e => logger.error(`Bulk Status Email Fail: ${e.message}`));
+                    sendTicketStatusNotification(r, r.customer_email, r.status || 'open', status).catch(e => logger.error(`Bulk Status Email Fail: ${e.message}`));
                 }
             }
         }
@@ -826,5 +829,31 @@ export const slaHold = async (req, res) => {
     } catch (err) {
         console.error("slaHold:", err);
         return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+/**
+ * POST /api/tickets/:id/ping
+ * Debug endpoint to test real-time Socket.io delivery to a specific ticket detail page.
+ */
+export const pingSocket = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { broadcast } = await import("../../services/socketService.js");
+
+        broadcast("new_message", {
+            id: Date.now(), // Fake ID
+            ticket_id: id,
+            conversation_id: 0,
+            sender_type: "agent",
+            sender_name: "SYSTEM DEBUG",
+            message_body: `📶 Real-time socket check at ${new Date().toLocaleTimeString()}. If you see this, your connection is LIVE!`,
+            created_at: new Date().toISOString()
+        });
+
+        return res.json({ success: true, message: "Ping broadcasted to ticket " + id });
+    } catch (err) {
+        console.error("pingSocket error:", err);
+        return res.status(500).json({ success: false, message: err.message });
     }
 };

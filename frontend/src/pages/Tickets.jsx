@@ -106,16 +106,25 @@ export default function Tickets() {
     
     useEffect(() => {
         if (!socket) return;
-        const handleRefresh = () => { fetchTickets() }
+        
+        let refreshTimeout = null;
+        const throttledRefresh = () => {
+            if (refreshTimeout) return;
+            refreshTimeout = setTimeout(() => {
+                fetchTickets();
+                refreshTimeout = null;
+            }, 1500); // 1.5 second throttle window
+        };
 
-        socket.on('new_ticket', handleRefresh)
-        socket.on('new_message', handleRefresh)
+        socket.on('new_ticket', throttledRefresh)
+        socket.on('new_message', throttledRefresh)
 
         return () => {
-            socket.off('new_ticket', handleRefresh)
-            socket.off('new_message', handleRefresh)
+            if (refreshTimeout) clearTimeout(refreshTimeout);
+            socket.off('new_ticket', throttledRefresh)
+            socket.off('new_message', throttledRefresh)
         }
-    }, [socket])
+    }, [socket, fetchTickets])
 
     // Client-side filter for search + source
     const filtered = tickets.filter(t => {

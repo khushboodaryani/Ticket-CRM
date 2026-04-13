@@ -1,0 +1,7 @@
+{
+  "customer_id": 1,
+  "project_id": 1,
+  "category": "Intermittent Connectivity",
+  "priority": "P3",
+  "description": "The 5G signal is dropping in the South Mumbai region during peak hours."
+}

@@ -32,12 +32,15 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
         if (conversations.length) {
             const convIds = conversations.map(c => c.id);
             const [msgRows] = await pool.query(
-                `SELECT cm.created_at, cm.message_body, cm.sender_type, cm.sender_name as guest_name,
-                        u.name as agent_name
-                 FROM conversation_messages cm
-                 LEFT JOIN users u ON cm.sender_id = u.id
-                 WHERE cm.conversation_id IN (?) AND cm.is_internal_note = 0
-                 ORDER BY cm.created_at ASC`,
+                `SELECT * FROM (
+                    SELECT cm.created_at, cm.message_body, cm.sender_type, cm.sender_name as guest_name,
+                           u.name as agent_name
+                    FROM conversation_messages cm
+                    LEFT JOIN users u ON cm.sender_id = u.id
+                    WHERE cm.conversation_id IN (?) AND cm.is_internal_note = 0
+                    ORDER BY cm.created_at DESC
+                    LIMIT 30
+                 ) recent ORDER BY recent.created_at ASC`,
                 [convIds]
             );
             messages = msgRows.map(m => ({
@@ -161,8 +164,18 @@ export const send = async (customerEmail, data) => {
         }
 
         const ticket = tickets[0];
-        const convId = ticket.conv_id;
+        let convId = ticket.conv_id;
         const subjectLine = ticket.subject || ticket.category;
+
+        // Guard: If ticket has no email conversation yet (e.g. manually created), create one
+        if (!convId) {
+            logger.info(`[EmailAdapter] No email conversation found for ticket ${data.ticketId}. Creating one.`);
+            const [cvRes] = await pool.query(
+                `INSERT INTO conversations (ticket_id, source_channel) VALUES (?, 'email')`,
+                [data.ticketId]
+            );
+            convId = cvRes.insertId;
+        }
 
         // 2. Build Threading Chain (Strict Logic)
         const [lastMsg] = await pool.query(
@@ -191,12 +204,23 @@ export const send = async (customerEmail, data) => {
         const ccList = participants.map(p => p.email).filter(Boolean);
 
         // Store everyone we're sending TO + CC so we recognize them if they reply later
+        // OPT-OUT PROTECTION: Check the removals table first to avoid re-adding unsubscribed users
         const recipientsToSync = [customerEmail, ...ccList].filter(Boolean);
         for (const email of recipientsToSync) {
-            await pool.query(
-                "INSERT IGNORE INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'cc')",
-                [convId, email.toLowerCase().trim()]
+            const normalized = email.toLowerCase().trim();
+            const [removals] = await pool.query(
+                "SELECT id FROM conversation_participant_removals WHERE conversation_id = ? AND email = ? LIMIT 1",
+                [convId, normalized]
             );
+
+            if (!removals.length) {
+                await pool.query(
+                    "INSERT IGNORE INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'cc')",
+                    [convId, normalized]
+                );
+            } else {
+                logger.info(`[EmailAdapter] Skipping opt-out recipient: ${normalized}`);
+            }
         }
 
         // 4. Trail and Body
@@ -235,30 +259,44 @@ export const send = async (customerEmail, data) => {
             `
         };
 
-        // 5. DB-FIRST PERSISTENCE (Step 1 of 2: Save to DB as pending/not-yet-sent)
-        const [msgResult] = await pool.query(
-            `INSERT INTO conversation_messages 
-             (conversation_id, sender_type, sender_id, sender_name, message_body, message_id, in_reply_to, reference_chain, is_sent)
-             VALUES (?, 'agent', ?, ?, ?, ?, ?, ?, 0)`,
-            [convId, data.senderId, senderName, data.message, newMessageId, inReplyTo, references]
-        );
-
-        // 6. SMTP TRANSMISSION
-        try {
-            await transporter.sendMail(mailOptions);
-            
-            // 7. Step 2 of 2: Mark as sent on success
+        // 5. UNIFIED PERSISTENCE (Update existing DB record instead of creating duplicate)
+        // We use the dbMessageId (data.messageId) passed from the controller
+        const dbMessageId = data.messageId;
+        if (dbMessageId) {
             await pool.query(
-                `UPDATE conversation_messages SET is_sent = 1 WHERE id = ?`,
-                [msgResult.insertId]
+                `UPDATE conversation_messages 
+                 SET message_id = ?, in_reply_to = ?, reference_chain = ?, is_sent = 0
+                 WHERE id = ?`,
+                [newMessageId, inReplyTo, references, dbMessageId]
             );
-
-            logger.info(`📧 [EmailAdapter] Reply sent and persisted for ${ticket.ticket_number} (ID: ${newMessageId})`);
-        } catch (mailErr) {
-            logger.error(`❌ [EmailAdapter] SMTP failed but message preserved: ${mailErr.message}`);
-            // We keep the record in DB (with is_sent=0) so the history trail is preserved
-            throw mailErr;
+        } else {
+            // Fallback: If for some reason no ID was passed, we create one (should not happen in standard flow)
+            const [fallbackRes] = await pool.query(
+                `INSERT INTO conversation_messages 
+                 (conversation_id, sender_type, sender_id, sender_name, message_body, message_id, in_reply_to, reference_chain, is_sent)
+                 VALUES (?, 'agent', ?, ?, ?, ?, ?, ?, 0)`,
+                [convId, data.senderId, senderName, data.message, newMessageId, inReplyTo, references]
+            );
+            data.messageId = fallbackRes.insertId;
         }
+
+        // 6. ASYNC SMTP TRANSMISSION (Non-blocking Background Task)
+        transporter.sendMail(mailOptions)
+            .then(async () => {
+                // Mark as successfully sent in DB
+                await pool.query(
+                    `UPDATE conversation_messages SET is_sent = 1 WHERE id = ?`,
+                    [data.messageId]
+                );
+                logger.info(`📧 [EmailAdapter] Async Reply successfully delivered: ${newMessageId}`);
+            })
+            .catch(mailErr => {
+                logger.error(`❌ [EmailAdapter] Async SMTP failed: ${mailErr.message} (DB ID: ${data.messageId})`);
+                // is_sent remains 0 for audit/retry
+            });
+
+        logger.info(`✅ [EmailAdapter] Reply headers attached to DB record ${data.messageId} and queued for delivery: ${ticket.ticket_number}`);
+        return { success: true, messageId: data.messageId };
 
     } catch (error) {
         logger.error(`❌ [EmailAdapter] Error in outbound flow: ${error.message}`);
