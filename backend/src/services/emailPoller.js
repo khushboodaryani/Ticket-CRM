@@ -31,6 +31,8 @@ const MAX_BACKOFF = 300000; // 5 minutes (300s)
 const MAX_ATTEMPTS = 50;    // Absolute ceiling for safety
 const MAX_MESSAGES_PER_CYCLE = parseInt(process.env.EMAIL_POLLER_BATCH_SIZE || '25', 10);
 const EMAIL_POLLER_CRON = process.env.EMAIL_POLLER_CRON || '*/15 * * * * *';
+const PARTICIPANT_FALLBACK_WINDOW_HOURS = Math.max(1, parseInt(process.env.EMAIL_FALLBACK_WINDOW_HOURS || '720', 10));
+const STRICT_SUBJECT_PARTICIPANT_MATCH = String(process.env.STRICT_SUBJECT_PARTICIPANT_MATCH || 'false').toLowerCase() === 'true';
 const POLLER_START_TS = Date.now();
 const POLLER_START_IMAP_DATE = moment(POLLER_START_TS).tz(TZ).format('DD-MMM-YYYY');
 
@@ -128,13 +130,15 @@ export async function processEmails(connection) {
 
     const pool = connectDB();
     let lockAcquired = false;
+    let lockConn = null;
 
     try {
         const cycleStart = Date.now();
         logger.info('[EmailPoller] Scan cycle started.');
         // --- GLOBAL LOCK ---
         // Prevents multiple PM2 processes from racing. Timeout 0 = return immediately if locked.
-        const [lockResult] = await pool.query("SELECT GET_LOCK('email_poller_lock', 0) AS lockStatus");
+        lockConn = await pool.getConnection();
+        const [lockResult] = await lockConn.query("SELECT GET_LOCK('email_poller_lock', 0) AS lockStatus");
         if (lockResult[0].lockStatus !== 1) {
             logger.info('[EmailPoller] Global lock busy. Another worker is processing emails.');
             isProcessing = false;
@@ -190,8 +194,15 @@ export async function processEmails(connection) {
     } catch (err) {
         logger.error(`[EmailPoller] Search error: ${err.message}`);
     } finally {
-        if (lockAcquired) {
-            await pool.query("SELECT RELEASE_LOCK('email_poller_lock')");
+        if (lockAcquired && lockConn) {
+            try {
+                await lockConn.query("SELECT RELEASE_LOCK('email_poller_lock')");
+            } catch (releaseErr) {
+                logger.error(`[EmailPoller] Failed to release global lock: ${releaseErr.message}`);
+            }
+        }
+        if (lockConn) {
+            try { lockConn.release(); } catch (_) {}
         }
         isProcessing = false;
         if (pendingProcess) {
@@ -266,11 +277,10 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         return;
     }
 
-    // Standardize Participants (To+CC+BCC)
+    // Standardize Participants (To+CC only; never promote BCC into outbound participant graph)
     const rawTo = parseAddressEmails(parsed.to);
     const rawCc = parseAddressEmails(parsed.cc);
-    const rawBcc = parseAddressEmails(parsed.bcc);
-    const participantList = filterParticipants([...new Set([...rawTo, ...rawCc, ...rawBcc])], senderEmail);
+    const visibleParticipants = [...new Set([...rawTo, ...rawCc])];
 
     let logId;
     if (existingLog.length) {
@@ -308,8 +318,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         );
 
         // 3. Map Participants (relational)
-        const participants = [...rawTo, ...rawCc, ...rawBcc];
-        const uniqueParticipants = [...new Set(filterParticipants(participants, senderEmail))];
+        const uniqueParticipants = [...new Set(filterParticipants(visibleParticipants, senderEmail))];
         for (const email of uniqueParticipants) {
             const normalized = email.toLowerCase().trim();
             const [removals] = await conn.query(
@@ -381,6 +390,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         let matchedTicketId = null;
         let matchedConvId = null;
         let matchedNum = null;
+        let matchReason = 'none';
 
         // --- STEP 1: Strict Header Matching (Thread IDs) ---
         if (inReplyTo) {
@@ -397,6 +407,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                 matchedConvId = msgMatch[0].conv_id;
                 matchedTicketId = msgMatch[0].ticket_id;
                 matchedNum = msgMatch[0].ticket_number;
+                matchReason = 'header_in_reply_to';
                 logger.debug(`[EmailPoller] Header Match (In-Reply-To): ${matchedNum}`);
             }
         }
@@ -418,6 +429,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                     matchedConvId = refMatch[0].conv_id;
                     matchedTicketId = refMatch[0].ticket_id;
                     matchedNum = refMatch[0].ticket_number;
+                    matchReason = 'header_references';
                     logger.debug(`[EmailPoller] Header Match (References): ${matchedNum}`);
                 }
             }
@@ -428,17 +440,39 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             const ticketNumberMatch = rawSubject.match(/(TKT-\d{8}-\d{4})/i);
             if (ticketNumberMatch) {
                 const tktNum = ticketNumberMatch[1].toUpperCase();
-                const [tktRows] = await conn.query(
-                    `SELECT t.id, c.id as conv_id FROM tickets t
-                     LEFT JOIN conversations c ON c.ticket_id = t.id
-                     WHERE t.ticket_number = ? LIMIT 1`,
-                    [tktNum]
-                );
+                const [tktRows] = STRICT_SUBJECT_PARTICIPANT_MATCH
+                    ? await conn.query(
+                        `SELECT t.id, c.id as conv_id
+                         FROM tickets t
+                         LEFT JOIN customers cu ON cu.id = t.customer_id
+                         LEFT JOIN conversations c ON c.ticket_id = t.id
+                         WHERE t.ticket_number = ?
+                           AND (
+                             LOWER(COALESCE(cu.email, '')) = LOWER(?)
+                             OR EXISTS (
+                               SELECT 1
+                               FROM conversation_participants cp
+                               WHERE cp.conversation_id = c.id AND LOWER(cp.email) = LOWER(?)
+                             )
+                           )
+                         LIMIT 1`,
+                        [tktNum, senderEmail, senderEmail]
+                    )
+                    : await conn.query(
+                        `SELECT t.id, c.id as conv_id
+                         FROM tickets t
+                         LEFT JOIN conversations c ON c.ticket_id = t.id
+                         WHERE t.ticket_number = ? LIMIT 1`,
+                        [tktNum]
+                    );
                 if (tktRows.length) {
                     matchedTicketId = tktRows[0].id;
                     matchedConvId = tktRows[0].conv_id;
                     matchedNum = tktNum;
+                    matchReason = 'subject_ticket_number';
                     logger.debug(`[EmailPoller] Subject Pattern Match: ${matchedNum}`);
+                } else if (STRICT_SUBJECT_PARTICIPANT_MATCH) {
+                    logger.info(`[EmailPoller] Ticket-number subject found (${tktNum}) but sender ${senderEmail} is not a participant/customer. Creating new ticket.`);
                 }
             }
         }
@@ -450,7 +484,9 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                  FROM conversation_participants cp
                  JOIN conversations c ON cp.conversation_id = c.id
                  JOIN tickets t ON c.ticket_id = t.id
-                 WHERE cp.email = ? AND t.status NOT IN ('resolved', 'closed')`,
+                 WHERE cp.email = ?
+                   AND t.status NOT IN ('resolved', 'closed')
+                   AND t.updated_at >= DATE_SUB(NOW(), INTERVAL ${PARTICIPANT_FALLBACK_WINDOW_HOURS} HOUR)`,
                 [senderEmail]
             );
 
@@ -480,6 +516,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                     matchedConvId = bestMatch.conversation_id;
                     matchedTicketId = bestMatch.ticket_id;
                     matchedNum = bestMatch.ticket_number;
+                    matchReason = 'participant_fallback';
                     logger.info(`[EmailPoller] 🛡️ Participant Fallback Match: ${matchedNum}`);
                 }
             }
@@ -487,12 +524,15 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
         // --- STEP 4: Attach or Create ---
         if (matchedTicketId && matchedConvId) {
+            logger.info(`[EmailPoller] Match result: reason=${matchReason} messageId=${messageId} inReplyTo=${inReplyTo || ''} ticket=${matchedNum}`);
             await appendReply(matchedTicketId, matchedConvId, matchedNum);
             await conn.commit();
             return;
         }
 
         // Create New Ticket
+        logger.info(`[EmailPoller] Match result: reason=new_ticket messageId=${messageId} inReplyTo=${inReplyTo || ''}`);
+        logger.info(`[EmailPoller] No thread match for ${messageId}. Creating new ticket from sender=${senderEmail}, subject="${rawSubject.slice(0, 120)}"`);
         let [customers] = await conn.query('SELECT id FROM customers WHERE email = ? LIMIT 1', [senderEmail]);
         let customerId;
         if (customers.length) {
@@ -550,8 +590,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         // Add Participants (To + CC + BCC)
         await conn.query(`INSERT INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'to')`, [conversationId, senderEmail]);
         
-        const participants = [...rawTo, ...rawCc, ...rawBcc];
-        const uniqueParticipants = [...new Set(filterParticipants(participants, senderEmail))];
+        const uniqueParticipants = [...new Set(filterParticipants(visibleParticipants, senderEmail))];
         for (const email of uniqueParticipants) {
             const normalized = email.toLowerCase().trim();
             // Even for new tickets, check if they were EVER removed from this conversation (unlikely but safe)

@@ -15,6 +15,7 @@ const transporter = nodemailer.createTransport({
 });
 
 const REPLY_TO_EMAIL = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim();
+const MAX_PARTICIPANT_NOTIFY = Math.max(1, parseInt(process.env.MAX_PARTICIPANT_NOTIFY || '20', 10));
 
 /**
  * Log an outgoing email's message-id to email_logs to prevent poller reflection loops.
@@ -190,6 +191,13 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
 
         if (allRecipients.size === 0) return;
 
+        // Deterministic order before cap to avoid random truncation behavior.
+        const recipientList = Array.from(allRecipients).sort((a, b) => a.localeCompare(b));
+        const cappedRecipients = recipientList.slice(0, MAX_PARTICIPANT_NOTIFY);
+        if (recipientList.length > cappedRecipients.length) {
+            logger.warn(`[EmailService] Participant notification capped for ${ticket.ticket_number}: ${recipientList.length} -> ${cappedRecipients.length}`);
+        }
+
         const headers = await buildThreadHeaders(pool, ticket.id);
         const trailHtml = await getConversationTrailHtml(pool, ticket.id);
         const formattedMsg = (messageBody || '').replace(/\n/g, '<br/>');
@@ -197,7 +205,7 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
         const mailOptions = {
             from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
             replyTo: REPLY_TO_EMAIL || undefined,
-            to: Array.from(allRecipients).join(', '),
+            to: cappedRecipients.join(', '),
             subject: `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
             headers: {
                 'Message-ID': headers.messageId,
@@ -225,7 +233,7 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
         };
 
         await transporter.sendMail(mailOptions);
-        logger.info(`📧 Sync notification sent to ${allRecipients.size} participant(s) for ${ticket.ticket_number}`);
+        logger.info(`📧 Sync notification sent to ${cappedRecipients.length} participant(s) for ${ticket.ticket_number}`);
 
         // --- PREVENTION ---
         await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);

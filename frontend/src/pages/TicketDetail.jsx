@@ -24,6 +24,48 @@ const ICON_TAG = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" str
 const ICON_CHECK = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
 const ICON_ALERT = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
 
+function formatConversationBody(message) {
+    const raw = String(message?.message_body || '').replace(/\r\n/g, '\n').trim()
+    if (!raw) return ''
+
+    let text = raw
+
+    if (message?.sender_type === 'customer') {
+        const cutPatterns = [
+            /\nOn .{0,220}wrote:/i,
+            /\nFrom:\s.*\nSent:\s.*\nTo:\s/i,
+            /\nConversation History/i,
+            /\nReply Tip:/i,
+            /\nTicket Update:\s*TKT-/i,
+            /\n-{2,}\s*Original Message\s*-{2,}/i
+        ]
+
+        for (const pattern of cutPatterns) {
+            const idx = text.search(pattern)
+            // Apply only when there is enough real text before quote block.
+            if (idx > 30) {
+                text = text.slice(0, idx).trim()
+                break
+            }
+        }
+
+        // Remove quoted lines copied from previous thread
+        text = text
+            .split('\n')
+            .filter(line => !line.trim().startsWith('>'))
+            .join('\n')
+
+        // Keep signatures only when body is very long; avoid hiding short replies.
+        const signatureIdx = text.search(/\n(\*?regards\*?|thanks(?: and regards)?|best regards?|cheers)\b/i)
+        if (signatureIdx > 40 && text.length > 250) {
+            text = text.slice(0, signatureIdx).trim()
+        }
+    }
+
+    text = text.replace(/\n{3,}/g, '\n\n').trim()
+    return text || raw
+}
+
 export default function TicketDetail() {
     const { id } = useParams()
     const navigate = useNavigate()
@@ -370,6 +412,8 @@ export default function TicketDetail() {
                                                     borderRadius: onRight ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
                                                     fontSize: 13,
                                                     lineHeight: 1.6,
+                                                    whiteSpace: 'pre-wrap',
+                                                    wordBreak: 'break-word',
                                                     background: m.is_internal_note
                                                         ? '#fffbeb'
                                                         : isSystem ? 'var(--bg-input)' : isAgent ? 'var(--accent)' : 'var(--bg-card)',
@@ -379,7 +423,7 @@ export default function TicketDetail() {
                                                     border: m.is_internal_note ? '1px solid #fde68a' : (isAgent ? 'none' : '1px solid var(--border)'),
                                                     boxShadow: '0 1px 3px rgba(0,0,0,0.07)'
                                                 }}>
-                                                    {m.message_body}
+                                                    {formatConversationBody(m)}
                                                 </div>
                                             </div>
                                         )
