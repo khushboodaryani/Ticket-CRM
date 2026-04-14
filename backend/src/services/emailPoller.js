@@ -20,6 +20,7 @@ const GMAIL_POLLER_EMAIL = (process.env.GMAIL_USER || '').toLowerCase().trim();
 
 let activeConnection = null;
 let isProcessing = false;
+let pendingProcess = false;
 let lastProcessStart = 0;
 let reconnectAttempts = 0;
 let isCronInitialized = false;
@@ -28,6 +29,10 @@ let isCronInitialized = false;
 const BACKOFF_BASE = 5000;  // 5 seconds
 const MAX_BACKOFF = 300000; // 5 minutes (300s)
 const MAX_ATTEMPTS = 50;    // Absolute ceiling for safety
+const MAX_MESSAGES_PER_CYCLE = parseInt(process.env.EMAIL_POLLER_BATCH_SIZE || '25', 10);
+const EMAIL_POLLER_CRON = process.env.EMAIL_POLLER_CRON || '*/15 * * * * *';
+const POLLER_START_TS = Date.now();
+const POLLER_START_IMAP_DATE = moment(POLLER_START_TS).tz(TZ).format('DD-MMM-YYYY');
 
 function stripHtml(html = '') {
     return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -36,6 +41,21 @@ function stripHtml(html = '') {
 function normalizeEmail(raw = '') {
     const match = raw.match(/<(.+?)>/);
     return (match ? match[1] : raw).trim().toLowerCase();
+}
+
+function normalizeMessageId(raw = '') {
+    return String(raw || '').replace(/[<>]/g, '').trim();
+}
+
+function messageIdVariants(raw = '') {
+    const clean = normalizeMessageId(raw);
+    if (!clean) return [];
+    return [clean, `<${clean}>`];
+}
+
+function normalizeMessageIdList(rawRefs) {
+    const refs = Array.isArray(rawRefs) ? rawRefs : (rawRefs ? [rawRefs] : []);
+    return [...new Set(refs.map(normalizeMessageId).filter(Boolean))];
 }
 
 /**
@@ -97,59 +117,55 @@ export async function processEmails(connection) {
         isProcessing = false;
     }
 
-    if (isProcessing) return;
+    if (isProcessing) {
+        pendingProcess = true;
+        logger.info('[EmailPoller] Scan requested while busy. Queued next scan.');
+        return;
+    }
 
     isProcessing = true;
     lastProcessStart = now;
 
+    const pool = connectDB();
+    let lockAcquired = false;
+
     try {
-        // Use a 1-day lookback window for safety (avoids processing years of old mail)
-        const dateStr = moment().tz(TZ).subtract(1, 'days').format('DD-MMM-YYYY');
-        const searchCriteria = ['UNSEEN', ['SINCE', dateStr]];
+        const cycleStart = Date.now();
+        logger.info('[EmailPoller] Scan cycle started.');
+        // --- GLOBAL LOCK ---
+        // Prevents multiple PM2 processes from racing. Timeout 0 = return immediately if locked.
+        const [lockResult] = await pool.query("SELECT GET_LOCK('email_poller_lock', 0) AS lockStatus");
+        if (lockResult[0].lockStatus !== 1) {
+            logger.info('[EmailPoller] Global lock busy. Another worker is processing emails.');
+            isProcessing = false;
+            return;
+        }
+        lockAcquired = true;
+        // Strict startup window: only process mails from when this server process started.
+        const searchCriteria = ['UNSEEN', ['SINCE', POLLER_START_IMAP_DATE]];
         const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
 
-        const messages = await connection.search(searchCriteria, fetchOptions);
+        let messages = await connection.search(searchCriteria, fetchOptions);
+        const rawCount = messages.length;
 
-        // Fixed: The search criteria must be an array of arrays when providing arguments like 'SINCE'.
-        const todayStr = moment().tz(TZ).format('DD-MMM-YYYY');
-        const fallbackCriteria = [['SINCE', todayStr]];
-        const allRecent = await connection.search(fallbackCriteria, fetchOptions);
-        
-        const pool = connectDB();
-
-        for (const m of allRecent) {
-            // Priority: Skip if we already found this message in the UNSEEN search
-            if (messages.some(existing => existing.attributes.uid === m.attributes.uid)) continue;
-
-            try {
-                const headerPart = m.parts.find(p => p.which === 'HEADER');
-                if (!headerPart) continue;
-
-                const msgIdArr = headerPart.body['message-id'];
-                const msgId = Array.isArray(msgIdArr) && msgIdArr[0] 
-                              ? msgIdArr[0].replace(/[<>]/g, '').trim() 
-                              : null;
-
-                if (!msgId) continue;
-                
-                // --- IDEMPOTENCY GATE ---
-                // We check the DB to ensure this specific Message-ID hasn't been handled yet.
-                const [exists] = await pool.query('SELECT id FROM email_logs WHERE message_id = ? LIMIT 1', [msgId]);
-                if (!exists.length) {
-                    const [existsInMsgs] = await pool.query('SELECT id FROM conversation_messages WHERE message_id = ? LIMIT 1', [msgId]);
-                    if (!existsInMsgs.length) {
-                        messages.push(m);
-                    }
-                }
-            } catch (pErr) {
-                logger.warn(`[EmailPoller] Fallback deduplication failed for UID ${m.attributes.uid}: ${pErr.message}`);
-            }
-        }
+        // IMAP SINCE is day-granularity, so enforce exact startup timestamp in-memory.
+        const startupFiltered = messages.filter(m => {
+            const d = m.attributes?.date ? new Date(m.attributes.date).getTime() : NaN;
+            if (Number.isNaN(d)) return true; // keep if provider omitted internal date
+            return d >= POLLER_START_TS;
+        });
+        const droppedBacklog = messages.length - startupFiltered.length;
+        messages = startupFiltered;
 
         if (messages.length > 0) {
-            logger.info(`[EmailPoller] Found ${messages.length} email(s) to process.`);
+            // Prioritize newest messages first and cap per-cycle batch size.
+            messages = messages
+                .sort((a, b) => (b.attributes?.uid || 0) - (a.attributes?.uid || 0))
+                .slice(0, Math.max(1, MAX_MESSAGES_PER_CYCLE));
+            logger.info(`[EmailPoller] Search returned ${rawCount}. Processing ${messages.length}.${droppedBacklog > 0 ? ` Skipped ${droppedBacklog} pre-start message(s).` : ''}`);
         } else {
             isProcessing = false;
+            logger.info(`[EmailPoller] No eligible unread emails in this cycle (search returned ${rawCount}).`);
             return;
         }
 
@@ -170,10 +186,21 @@ export async function processEmails(connection) {
                 // If it failed, we leave it UNSEEN so the next scan can try again.
             }
         }
+        logger.info(`[EmailPoller] Cycle completed in ${Date.now() - cycleStart}ms`);
     } catch (err) {
         logger.error(`[EmailPoller] Search error: ${err.message}`);
     } finally {
+        if (lockAcquired) {
+            await pool.query("SELECT RELEASE_LOCK('email_poller_lock')");
+        }
         isProcessing = false;
+        if (pendingProcess) {
+            pendingProcess = false;
+            logger.info('[EmailPoller] Running queued scan now.');
+            setTimeout(() => {
+                processEmails(connection).catch(e => logger.error(`[EmailPoller] Queued scan error: ${e.message}`));
+            }, 200);
+        }
     }
 }
 
@@ -189,14 +216,14 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         return;
     }
 
-    const messageId = parsed.messageId;
+    const messageId = normalizeMessageId(parsed.messageId);
     if (!messageId) {
         logger.warn(`[EmailPoller] Email has no Message-ID header — skipping to prevent DB errors.`);
         return;
     }
 
-    const inReplyTo = parsed.inReplyTo;
-    const references = Array.isArray(parsed.references) ? parsed.references : (parsed.references ? [parsed.references] : []);
+    const inReplyTo = normalizeMessageId(parsed.inReplyTo);
+    const references = normalizeMessageIdList(parsed.references);
     const fromRaw = parsed.from?.text || '';
     const senderEmail = normalizeEmail(fromRaw);
     const senderName = parsed.from?.value?.[0]?.name || senderEmail;
@@ -226,15 +253,13 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     );
 
     if (existingLog.length) {
-        if (existingLog[0].status === 'processed') {
-            logger.info(`[EmailPoller] ℹ️ Skipping already processed message: ${messageId}`);
-            return;
-        }
+        logger.info(`[EmailPoller] ℹ️ Skipping message already in logs (${existingLog[0].status}): ${messageId}`);
+        return;
     }
 
     const [existingMsg] = await pool.query(
-        `SELECT id FROM conversation_messages WHERE message_id = ? LIMIT 1`,
-        [messageId]
+        `SELECT id FROM conversation_messages WHERE message_id IN (?) LIMIT 1`,
+        [messageIdVariants(messageId)]
     );
     if (existingMsg.length) {
         logger.info(`[EmailPoller] ℹ️ Skipping duplicate message in DB: ${messageId}`);
@@ -268,7 +293,10 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
     const appendReply = async (ticketId, conversationId, ticketNumber) => {
         // Redundant check for extreme safety
-        const [doubleCheck] = await conn.query(`SELECT id FROM conversation_messages WHERE message_id = ?`, [messageId]);
+        const [doubleCheck] = await conn.query(
+            `SELECT id FROM conversation_messages WHERE message_id IN (?)`,
+            [messageIdVariants(messageId)]
+        );
         if (doubleCheck.length) return;
 
         // 2. Insert Message with headers
@@ -331,7 +359,8 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             if (!isAutomated) {
                 const [tRows] = await conn.query('SELECT id, ticket_number, category, priority FROM tickets WHERE id = ?', [ticketId]);
                 if (tRows.length) {
-                    await sendParticipantReplyNotification(tRows[0], senderEmail, bodyText);
+                    sendParticipantReplyNotification(tRows[0], senderEmail, bodyText)
+                        .catch(err => logger.error(`[EmailPoller] Async participant notification failed: ${err.message}`));
                 }
             } else {
                 logger.debug(`[EmailPoller] Suppressing participant notification for automated reply to ${ticketNumber}`);
@@ -355,13 +384,14 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
         // --- STEP 1: Strict Header Matching (Thread IDs) ---
         if (inReplyTo) {
+            const inReplyToCandidates = messageIdVariants(inReplyTo);
             const [msgMatch] = await conn.query(
                 `SELECT c.id as conv_id, c.ticket_id, t.ticket_number 
                  FROM conversation_messages cm
                  JOIN conversations c ON cm.conversation_id = c.id
                  JOIN tickets t ON c.ticket_id = t.id
-                 WHERE cm.message_id = ? LIMIT 1`,
-                [inReplyTo]
+                 WHERE cm.message_id IN (?) LIMIT 1`,
+                [inReplyToCandidates]
             );
             if (msgMatch.length) {
                 matchedConvId = msgMatch[0].conv_id;
@@ -372,21 +402,24 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         }
 
         if (!matchedTicketId && references.length > 0) {
-            // Optimized: Search all references in a single query instead of a loop
-            const [refMatch] = await conn.query(
-                `SELECT c.id as conv_id, c.ticket_id, t.ticket_number 
-                 FROM conversation_messages cm
-                 JOIN conversations c ON cm.conversation_id = c.id
-                 JOIN tickets t ON c.ticket_id = t.id
-                 WHERE cm.message_id IN (?) 
-                 ORDER BY cm.created_at DESC LIMIT 1`,
-                [references]
-            );
-            if (refMatch.length) {
-                matchedConvId = refMatch[0].conv_id;
-                matchedTicketId = refMatch[0].ticket_id;
-                matchedNum = refMatch[0].ticket_number;
-                logger.debug(`[EmailPoller] Header Match (References): ${matchedNum}`);
+            const refCandidates = [...new Set(references.flatMap(ref => messageIdVariants(ref)))];
+            if (refCandidates.length > 0) {
+                // Optimized: Search all references in a single query instead of a loop
+                const [refMatch] = await conn.query(
+                    `SELECT c.id as conv_id, c.ticket_id, t.ticket_number 
+                     FROM conversation_messages cm
+                     JOIN conversations c ON cm.conversation_id = c.id
+                     JOIN tickets t ON c.ticket_id = t.id
+                     WHERE cm.message_id IN (?) 
+                     ORDER BY cm.created_at DESC LIMIT 1`,
+                    [refCandidates]
+                );
+                if (refMatch.length) {
+                    matchedConvId = refMatch[0].conv_id;
+                    matchedTicketId = refMatch[0].ticket_id;
+                    matchedNum = refMatch[0].ticket_number;
+                    logger.debug(`[EmailPoller] Header Match (References): ${matchedNum}`);
+                }
             }
         }
 
@@ -422,19 +455,32 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             );
 
             if (pMatches.length > 0) {
-                // If there's only one active ticket, we match it ONLY if the subject is similar or it's a generic thread
+                // If there's more than one active ticket, find the best match by subject similarity
+                let bestMatch = null;
+                
                 for (const match of pMatches) {
                     const existingSubject = (match.subject || '').replace(/^(re|fwd?|reply):\s*/i, '').trim().toLowerCase();
                     const incomingSubject = cleanSubject.toLowerCase();
 
-                    // If subjects match (ignoring Re: prefixes) OR if the incoming mail is clearly a reply to SOMETHING
-                    if (existingSubject === incomingSubject || rawSubject.toLowerCase().match(/^(re|fwd|reply):/)) {
-                        matchedConvId = match.conversation_id;
-                        matchedTicketId = match.ticket_id;
-                        matchedNum = match.ticket_number;
-                        logger.info(`[EmailPoller] 🛡️ Participant Fallback Match: ${matchedNum}`);
-                        break;
+                    // Priority 1: Exact Subject Match (after cleaning)
+                    if (existingSubject === incomingSubject) {
+                        bestMatch = match;
+                        logger.debug(`[EmailPoller] 🛡️ Exact Subject Fallback: ${match.ticket_number}`);
+                        break; 
                     }
+                    
+                    // Priority 2: If it's a generic "Re:" reply, we only match if no better match found yet
+                    if (rawSubject.toLowerCase().match(/^(re|fwd|reply):/) && !bestMatch) {
+                        bestMatch = match;
+                        logger.debug(`[EmailPoller] 🛡️ Partial/Thread Fallback (First found): ${match.ticket_number}`);
+                    }
+                }
+
+                if (bestMatch) {
+                    matchedConvId = bestMatch.conversation_id;
+                    matchedTicketId = bestMatch.ticket_id;
+                    matchedNum = bestMatch.ticket_number;
+                    logger.info(`[EmailPoller] 🛡️ Participant Fallback Match: ${matchedNum}`);
                 }
             }
         }
@@ -562,9 +608,10 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
         // Notifications (ONLY if NOT automated) — all wrapped in try/catch since DB is already committed
         const ticketObj = { id: ticketId, ticket_number: ticketNumber, category: cleanSubject.slice(0, 250), priority: finalPriority, description: description, etr: etr };
-        try { 
+        try {
             if (!isAutomated) {
-                await sendTicketNotification(ticketObj, senderEmail, messageId); 
+                sendTicketNotification(ticketObj, senderEmail, messageId)
+                    .catch(err => logger.error(`[EmailPoller] Async initial acknowledgement failed: ${err.message}`));
             } else {
                 logger.info(`[EmailPoller] Suppressing initial acknowledgement for automated new ticket ${ticketNumber}`);
             }
@@ -604,9 +651,14 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 export async function startEmailPoller() {
     const gmailUser = process.env.GMAIL_USER;
     const gmailPass = (process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_PASSWORD)?.trim();
+    const smtpUser = (process.env.EMAIL_USER || '').trim().toLowerCase();
+    const pollerUser = (gmailUser || '').trim().toLowerCase();
     if (!gmailUser || !gmailPass) {
         logger.error('[EmailPoller] Missing GMAIL_USER or GMAIL_APP_PASSWORD in environment.');
         return;
+    }
+    if (smtpUser && pollerUser && smtpUser !== pollerUser) {
+        logger.warn(`[EmailPoller] SMTP sender (${smtpUser}) differs from polled inbox (${pollerUser}). Ensure outgoing emails set Reply-To to ${pollerUser}.`);
     }
 
     const config = {
@@ -637,15 +689,21 @@ export async function startEmailPoller() {
         await activeConnection.openBox('INBOX');
         logger.info(`[EmailPoller] ✅ IMAP connected and INBOX opened for ${gmailUser}`);
 
+        // Real-time trigger: process immediately when server receives new mail notifications.
+        activeConnection.imap.on('mail', (numNewMsgs) => {
+            logger.info(`[EmailPoller] New mail event received (${numNewMsgs || 0}). Triggering immediate scan.`);
+            processEmails(activeConnection).catch(e => logger.error(`[EmailPoller] Mail-event process error: ${e.message}`));
+        });
+
         // Initialize Cron only ONCE in the lifetime of the process
         if (!isCronInitialized) {
-            cron.schedule('*/1 * * * *', () => {
+            cron.schedule(EMAIL_POLLER_CRON, () => {
                 if (activeConnection && !isProcessing) {
                     processEmails(activeConnection).catch(e => logger.error(`[EmailPoller] Cron process error: ${e.message}`));
                 }
             });
             isCronInitialized = true;
-            logger.info('[EmailPoller] ⏰ Scheduled 1-minute recurring sync.');
+            logger.info(`[EmailPoller] ⏰ Scheduled recurring sync with cron: ${EMAIL_POLLER_CRON}`);
         }
 
         // Immediate first scan
@@ -685,4 +743,3 @@ function handleReconnection() {
     logger.warn(`[EmailPoller] ⏳ Reconnecting in ${delay / 1000}s...`);
     setTimeout(startEmailPoller, delay);
 }
-

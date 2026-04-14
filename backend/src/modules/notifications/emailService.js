@@ -14,10 +14,30 @@ const transporter = nodemailer.createTransport({
     }
 });
 
+const REPLY_TO_EMAIL = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim();
+
+/**
+ * Log an outgoing email's message-id to email_logs to prevent poller reflection loops.
+ */
+export async function logOutgoingEmail(pool, messageId, ticketNumber = null) {
+    if (!messageId) return;
+    try {
+        const cleanMsgId = messageId.replace(/[<>]/g, '').trim();
+        await pool.query(
+            `INSERT INTO email_logs (message_id, status, error_message) 
+             VALUES (?, 'processed', ?) 
+             ON DUPLICATE KEY UPDATE status = 'processed'`,
+            [cleanMsgId, `Outgoing notification for ${ticketNumber || 'system'}`]
+        );
+    } catch (err) {
+        logger.error(`[EmailService] Failed to log outgoing ID ${messageId}: ${err.message}`);
+    }
+}
+
 /**
  * Helper to build threading headers for a specific ticket
  */
-async function buildThreadHeaders(pool, ticketId) {
+export async function buildThreadHeaders(pool, ticketId) {
     const [rows] = await pool.query(
         `SELECT c.root_message_id, cm.message_id as last_msg_id, cm.reference_chain
          FROM conversations c
@@ -74,8 +94,9 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
 
     const mailOptions = {
         from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
-        subject: `Ticket Received: ${ticket.category} [${ticket.ticket_number}]`,
+        subject: `[${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
             'In-Reply-To': headers.inReplyTo,
@@ -111,6 +132,23 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
     try {
         await transporter.sendMail(mailOptions);
         logger.info(`📧 Notification email sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
+        
+        // --- PERSISTENCE & PREVENTION ---
+        // 1. Log in email_logs to prevent reflection
+        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
+
+        // 2. Insert into conversation_messages so replies can thread back to this automated receipt
+        try {
+            const [conv] = await pool.query('SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1', [ticket.id]);
+            if (conv.length) {
+                await pool.query(
+                    `INSERT INTO conversation_messages (conversation_id, sender_type, sender_name, message_body, message_id, in_reply_to, reference_chain)
+                     VALUES (?, 'system', 'Support Team', ?, ?, ?, ?)`,
+                    [conv[0].id, `Automated Acknowledgement Sent`, headers.messageId.replace(/[<>]/g, '').trim(), headers.inReplyTo, headers.references]
+                );
+            }
+        } catch (dbErr) { logger.warn(`[EmailService] Failed to record automated receipt in DB: ${dbErr.message}`); }
+
     } catch (error) {
         logger.error(`❌ Failed to send notification email: ${error.message}`);
     }
@@ -158,8 +196,9 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
 
         const mailOptions = {
             from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
+            replyTo: REPLY_TO_EMAIL || undefined,
             to: Array.from(allRecipients).join(', '),
-            subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
+            subject: `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
             headers: {
                 'Message-ID': headers.messageId,
                 'In-Reply-To': headers.inReplyTo,
@@ -188,6 +227,9 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
         await transporter.sendMail(mailOptions);
         logger.info(`📧 Sync notification sent to ${allRecipients.size} participant(s) for ${ticket.ticket_number}`);
 
+        // --- PREVENTION ---
+        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
+
     } catch (err) {
         logger.error(`❌ Failed to send participant sync notification: ${err.message}`);
     }
@@ -213,6 +255,7 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
 
     const mailOptions = {
         from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
         subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
         headers: {
@@ -246,6 +289,9 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
     try {
         await transporter.sendMail(mailOptions);
         logger.info(`📧 Status update email sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
+
+        // --- PREVENTION ---
+        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
     } catch (error) {
         logger.error(`❌ Failed to send status update email: ${error.message}`);
     }

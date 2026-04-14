@@ -32,6 +32,29 @@ async function getOrCreateConversation(pool, ticketId, sourceChannel = 'manual')
     return newConv[0];
 }
 
+async function getAllOrCreateConversations(pool, ticketId, sourceChannel = 'manual') {
+    const [existing] = await pool.query(
+        `SELECT * FROM conversations WHERE ticket_id=? ORDER BY id ASC`,
+        [ticketId]
+    );
+    if (existing.length) return existing;
+    const created = await getOrCreateConversation(pool, ticketId, sourceChannel);
+    return [created];
+}
+
+async function getPreferredConversation(pool, ticketId, preferredChannel = 'manual') {
+    const [rows] = await pool.query(
+        `SELECT *
+         FROM conversations
+         WHERE ticket_id=?
+         ORDER BY CASE WHEN source_channel = ? THEN 0 ELSE 1 END, id ASC
+         LIMIT 1`,
+        [ticketId, preferredChannel]
+    );
+    if (rows.length) return rows[0];
+    return getOrCreateConversation(pool, ticketId, preferredChannel);
+}
+
 // GET /api/tickets/:ticketId/conversation
 export const getConversation = async (req, res) => {
     try {
@@ -42,18 +65,32 @@ export const getConversation = async (req, res) => {
         const [ticketRows] = await pool.query(`SELECT id FROM tickets WHERE id=?`, [ticketId]);
         if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
-        const conversation = await getOrCreateConversation(pool, ticketId);
+        const [ticketInfo] = await pool.query(`SELECT source FROM tickets WHERE id=? LIMIT 1`, [ticketId]);
+        const ticketSource = ticketInfo[0]?.source || 'manual';
+        const conversations = await getAllOrCreateConversations(pool, ticketId, ticketSource);
+        const conversationIds = conversations.map(c => c.id);
 
         const [messages] = await pool.query(
-            `SELECT cm.*, u.name as sender_name, u.role as sender_role
+            `SELECT 
+                cm.*, 
+                CASE 
+                    WHEN cm.sender_type = 'agent' THEN u.name
+                    ELSE cm.sender_name 
+                END as sender_name,
+                u.role as sender_role
              FROM conversation_messages cm
-             LEFT JOIN users u ON cm.sender_id = u.id
-             WHERE cm.conversation_id=?
+             LEFT JOIN users u ON cm.sender_type = 'agent' AND cm.sender_id = u.id
+             WHERE cm.conversation_id IN (?)
              ORDER BY cm.created_at ASC`,
-            [conversation.id]
+            [conversationIds]
         );
 
-        return res.json({ success: true, conversation, messages });
+        return res.json({
+            success: true,
+            conversation: conversations[0],
+            conversations,
+            messages
+        });
     } catch (err) {
         console.error("getConversation:", err);
         return res.status(500).json({ success: false, message: "Server error." });
@@ -79,14 +116,15 @@ export const addMessage = async (req, res) => {
         if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
         const ticket = ticketRows[0];
 
-        const conversation = await getOrCreateConversation(pool, ticketId);
+        const preferredChannel = ticket.source || 'manual';
+        const conversation = await getPreferredConversation(pool, ticketId, preferredChannel);
         const isInternal = is_internal_note ? 1 : 0;
 
         const [msgResult] = await pool.query(
             `INSERT INTO conversation_messages
-             (conversation_id, sender_id, sender_type, message_body, is_internal_note)
-             VALUES (?,?,?,?,?)`,
-            [conversation.id, req.user.userId, 'agent', message_body.trim(), isInternal]
+             (conversation_id, sender_id, sender_type, sender_name, message_body, is_internal_note)
+             VALUES (?,?,?,?,?,?)`,
+            [conversation.id, req.user.userId, 'agent', req.user.name, message_body.trim(), isInternal]
         );
 
         const messageId = msgResult.insertId;

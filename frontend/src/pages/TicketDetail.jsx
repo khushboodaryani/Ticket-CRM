@@ -344,12 +344,18 @@ export default function TicketDetail() {
                                         <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, marginTop: 40 }}>No messages yet — start the conversation below</div>
                                     )}
                                     {messages.map(m => {
+                                        const isCustomer = m.sender_type === 'customer'
+                                        const isSystem = m.sender_type === 'system'
                                         const isAgent = m.sender_type === 'agent'
-                                        const isMe = m.sender_id === user?.id
+                                        const onRight = !isCustomer
+
+                                        // Fallback name logic
+                                        const displayName = m.sender_name || (isSystem ? 'System' : (isAgent ? 'Agent' : 'Customer'))
+
                                         return (
-                                            <div key={m.id} style={{ maxWidth: '82%', alignSelf: isAgent ? 'flex-end' : 'flex-start', display: 'flex', flexDirection: 'column', alignItems: isAgent ? 'flex-end' : 'flex-start' }}>
+                                            <div key={m.id} style={{ maxWidth: '82%', alignSelf: onRight ? 'flex-end' : 'flex-start', display: 'flex', flexDirection: 'column', alignItems: onRight ? 'flex-end' : 'flex-start' }}>
                                                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4, padding: '0 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                                    <span style={{ fontWeight: 600 }}>{m.sender_name || 'Customer'}</span>
+                                                    <span style={{ fontWeight: 600 }}>{displayName}</span>
                                                     {m.sender_role && (
                                                         <span style={{ fontSize: 10, background: 'rgba(59,130,246,0.1)', color: 'var(--accent)', padding: '2px 6px', borderRadius: 4, fontWeight: 600, letterSpacing: 0.3 }}>
                                                             {m.sender_role.replace(/_/g, ' ').toUpperCase()}
@@ -361,12 +367,12 @@ export default function TicketDetail() {
                                                 </div>
                                                 <div style={{
                                                     padding: '10px 14px',
-                                                    borderRadius: isAgent ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                                                    borderRadius: onRight ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
                                                     fontSize: 13,
                                                     lineHeight: 1.6,
                                                     background: m.is_internal_note
                                                         ? '#fffbeb'
-                                                        : isAgent ? 'var(--accent)' : 'var(--bg-card)',
+                                                        : isSystem ? 'var(--bg-input)' : isAgent ? 'var(--accent)' : 'var(--bg-card)',
                                                     color: m.is_internal_note
                                                         ? '#92400e'
                                                         : isAgent ? '#fff' : 'var(--text-primary)',

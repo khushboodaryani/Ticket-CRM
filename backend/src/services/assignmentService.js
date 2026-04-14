@@ -30,7 +30,11 @@ export const getShiftAssignee = async (priority = 'P3') => {
 
         const activeShiftIds = allShifts.filter(s => {
             let days = [];
-            try { days = JSON.parse(s.working_days); } catch { return false; }
+            if (Array.isArray(s.working_days)) {
+                days = s.working_days;
+            } else {
+                try { days = JSON.parse(s.working_days); } catch { return false; }
+            }
             if (!days.includes(currentDay)) return false;
 
             const { start_time: start, end_time: end } = s;

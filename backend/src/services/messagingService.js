@@ -88,8 +88,9 @@ export const handleInbound = async (payload) => {
 
         // 4. Add Message to Conversation Messages
         await pool.query(
-            `INSERT INTO conversation_messages (conversation_id, sender_type, message_body, created_at) VALUES (?, 'customer', ?, NOW())`,
-            [conversationId, body]
+            `INSERT INTO conversation_messages (conversation_id, sender_id, sender_name, sender_type, message_body, created_at) 
+             VALUES (?, ?, ?, 'customer', ?, NOW())`,
+            [conversationId, customerId, senderName || 'Guest User', body]
         );
 
         return { success: true, ticketId };

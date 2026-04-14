@@ -3,6 +3,7 @@
 
 import nodemailer from 'nodemailer';
 import { logger } from '../../../logger.js';
+import { logOutgoingEmail } from '../../notifications/emailService.js';
 import connectDB from '../../../db/index.js';
 
 const transporter = nodemailer.createTransport({
@@ -14,6 +15,8 @@ const transporter = nodemailer.createTransport({
         pass: process.env.EMAIL_PASSWORD
     }
 });
+
+const REPLY_TO_EMAIL = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim();
 
 /**
  * Build a full chronological conversation trail for inclusion in outgoing emails.
@@ -229,6 +232,7 @@ export const send = async (customerEmail, data) => {
 
         const mailOptions = {
             from: `"Support Team" <${process.env.EMAIL_USER}>`,
+            replyTo: REPLY_TO_EMAIL || undefined,
             to: customerEmail,
             cc: ccList.length ? ccList.join(', ') : undefined,
             subject: `Re: [${ticket.ticket_number}] ${subjectLine}`,
@@ -236,6 +240,8 @@ export const send = async (customerEmail, data) => {
                 'Message-ID': newMessageId,
                 'In-Reply-To': inReplyTo,
                 'References': references,
+                'Auto-Submitted': 'auto-generated',
+                'X-Auto-Response-Suppress': 'All'
             },
             html: `
                 <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 800px; margin: 0 auto;">

@@ -13,7 +13,7 @@ const buildETR = () => moment().tz(TZ).add(2, "hours").format("YYYY-MM-DD HH:mm:
 const buildRoleFilter = (user) => {
     const { userId, role } = user;
     switch (role) {
-        case "agent": return { where: "t.assigned_to = ?", params: [userId] };
+        case "agent": return { where: "(t.assigned_to = ? OR t.assigned_to IS NULL)", params: [userId] };
         case "tl": return { where: "t.escalation_level >= 1 AND (t.assigned_to = ? OR t.assigned_to IN (SELECT id FROM users WHERE reporting_to = ?))", params: [userId, userId] };
         case "manager": return { where: "t.escalation_level >= 2 AND (t.assigned_to = ? OR t.assigned_to IN (SELECT id FROM users WHERE reporting_to = ? OR reporting_to IN (SELECT id FROM users WHERE reporting_to = ?)))", params: [userId, userId, userId] };
         case "gm": return { where: "t.escalation_level >= 3", params: [] };
