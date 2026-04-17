@@ -7,6 +7,9 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { errorHandler, notFoundHandler } from "./middlewares/errorHandling.js";
+import { rateLimit } from "express-rate-limit";
+import { authenticateToken } from "./middlewares/auth.js";
+import { getAttachmentByFilename } from "./modules/conversations/attachmentController.js";
 
 // === Module Imports ===
 import authRoutes         from "./modules/auth/authRoutes.js";
@@ -22,6 +25,8 @@ import notificationRoutes from "./modules/notifications/notificationRoutes.js";
 import workflowRoutes     from "./modules/workflows/workflowRoutes.js";
 import analyticsRoutes    from "./modules/analytics/analyticsRoutes.js";
 import slaRoutes          from "./modules/sla/slaRoutes.js";
+import domainRoutes       from "./modules/customers/domainRoutes.js";
+import approvalRoutes     from "./modules/approvals/approvalRoutes.js";
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,8 +52,13 @@ app.use(cors({
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
-// Serve uploaded attachments statically
-app.use("/attachments", express.static(path.join(__dirname, "..", "public", "attachments")));
+// Secure Attachment Proxy (Replacement for express.static)
+const attachmentLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: { success: false, message: "Too many download requests. Please try again later." }
+});
+app.get("/attachments/:filename", authenticateToken, attachmentLimiter, getAttachmentByFilename);
 
 // Health check
 app.get("/health", (req, res) => res.json({ status: "ok", service: "Ticket CRM Backend (Modular)", timestamp: new Date().toISOString() }));
@@ -67,6 +77,8 @@ app.use("/api/notifications",  notificationRoutes);
 app.use("/api/workflows",      workflowRoutes);
 app.use("/api/analytics",      analyticsRoutes);
 app.use("/api/sla",            slaRoutes);
+app.use("/api/domains",        domainRoutes);
+app.use("/api/approvals",      approvalRoutes);
 
 
 app.use(notFoundHandler);

@@ -10,7 +10,10 @@ export default function Projects() {
     const [loading, setLoading] = useState(true)
     const [showModal, setShowModal] = useState(false)
     const [editItem, setEditItem] = useState(null)
-    const [form, setForm] = useState({ customer_id: '', name: '', project_code: '', description: '' })
+    const [form, setForm] = useState({ 
+        customer_id: '', name: '', project_code: '', description: '', domain: '',
+        resolution_time_hours: '', response_time_sec: '' 
+    })
     const [saving, setSaving] = useState(false)
     const [search, setSearch] = useState('')
 
@@ -22,8 +25,36 @@ export default function Projects() {
     }
     useEffect(() => { load() }, [])
 
-    const openCreate = () => { setEditItem(null); setForm({ customer_id: '', name: '', project_code: '', description: '' }); setShowModal(true) }
-    const openEdit = (p) => { setEditItem(p); setForm({ customer_id: p.customer_id || '', name: p.name, project_code: p.project_code || '', description: p.description || '' }); setShowModal(true) }
+    const openCreate = () => { 
+        setEditItem(null); 
+        setForm({ 
+            customer_id: '', name: '', project_code: '', description: '', domain: '',
+            resolution_time_hours: '', response_time_sec: ''
+        }); 
+        setShowModal(true) 
+    }
+    const openEdit = (p) => { 
+        setEditItem(p); 
+        setForm({ 
+            customer_id: p.customer_id || '', 
+            name: p.name, 
+            project_code: p.project_code || '', 
+            description: p.description || '', 
+            domain: p.domain || '',
+            resolution_time_hours: p.resolution_time_hours || '',
+            response_time_sec: p.response_time_sec || ''
+        }); 
+        setShowModal(true) 
+    }
+
+    const handleDelete = async (p) => {
+        if (!confirm(`Delete project "${p.name}"? This will also delete all associated tickets. This action cannot be undone.`)) return
+        try {
+            await api.delete(`/projects/${p.id}`)
+            toast.success('Project deleted')
+            load()
+        } catch (err) { toast.error(err.response?.data?.message || 'Failed to delete') }
+    }
 
     const handleSave = async (e) => {
         e.preventDefault(); setSaving(true)
@@ -54,19 +85,40 @@ export default function Projects() {
                     </div>
                     <div className="table-wrap">
                         <table>
-                            <thead><tr><th>Project</th><th>Code</th><th>Customer</th><th>Tickets</th><th>Description</th><th>Created</th><th>Actions</th></tr></thead>
+                            <thead><tr><th>Project</th><th>Code</th><th>Customer</th><th>Domain</th><th>Tickets</th><th>Description</th><th>Created</th><th>Actions</th></tr></thead>
                             <tbody>
-                                {loading ? <tr><td colSpan={7} style={{ textAlign: 'center', padding: 40 }}><div className="spinner" style={{ margin: 'auto' }} /></td></tr>
-                                    : filtered.length === 0 ? <tr><td colSpan={7} className="empty-row">No projects found</td></tr>
+                                {loading ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40 }}><div className="spinner" style={{ margin: 'auto' }} /></td></tr>
+                                    : filtered.length === 0 ? <tr><td colSpan={8} className="empty-row">No projects found</td></tr>
                                         : filtered.map(p => (
                                             <tr key={p.id}>
                                                 <td><strong>{p.name}</strong></td>
                                                 <td><span style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--accent)' }}>{p.project_code || '—'}</span></td>
                                                 <td style={{ fontSize: 13 }}>{p.customer_name}</td>
+                                                <td>
+                                                    {p.domain ? (
+                                                        <span style={{
+                                                            background: 'var(--bg-accent-subtle, rgba(79,142,247,0.12))',
+                                                            color: 'var(--accent)',
+                                                            padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 500
+                                                        }}>
+                                                            @{p.domain}
+                                                        </span>
+                                                    ) : (
+                                                        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
+                                                    )}
+                                                </td>
                                                 <td><span className="badge badge-in_progress">{p.ticket_count}</span></td>
                                                 <td style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 200 }} className="truncate">{p.description || '—'}</td>
                                                 <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{new Date(p.created_at).toLocaleDateString('en-IN')}</td>
-                                                <td><button className="btn btn-secondary btn-sm" onClick={() => openEdit(p)}>Edit</button></td>
+                                                <td>
+                                                    <div style={{ display: 'flex', gap: 6 }}>
+                                                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(p)}>Edit</button>
+                                                        <button className="btn btn-sm" onClick={() => handleDelete(p)} title="Delete Project"
+                                                            style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.2)', padding: '4px 8px' }}>
+                                                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                                                        </button>
+                                                    </div>
+                                                </td>
                                             </tr>
                                         ))}
                             </tbody>
@@ -96,6 +148,29 @@ export default function Projects() {
                                 <div className="form-group">
                                     <label className="form-label">Project Name <span>*</span></label>
                                     <input className="input" required value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="Project Alpha" />
+                                </div>
+                            </div>
+                            <div className="form-group" style={{ marginBottom: 16 }}>
+                                <label className="form-label">Project Domain <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span></label>
+                                <input className="input" value={form.domain} onChange={e => setForm(p => ({ ...p, domain: e.target.value }))} placeholder="e.g. shams.multycomm.com" />
+                                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                                    Emails from this domain will automatically create tickets under this project
+                                </div>
+                            </div>
+                            <div style={{ background: 'var(--bg-app)', padding: 16, borderRadius: 16, border: '1px solid var(--border)', marginBottom: 20 }}>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>SLA Policy Override (Optional)</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                                    <div className="form-group">
+                                        <label className="form-label">Resolution Window (Hrs)</label>
+                                        <input type="number" className="input" value={form.resolution_time_hours} onChange={e => setForm(p => ({ ...p, resolution_time_hours: e.target.value }))} placeholder="e.g. 1.0" />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">Response Time (Sec)</label>
+                                        <input type="number" className="input" value={form.response_time_sec} onChange={e => setForm(p => ({ ...p, response_time_sec: e.target.value }))} placeholder="e.g. 120" />
+                                    </div>
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+                                    If set, this project's contracts will override Customer and Global SLAs.
                                 </div>
                             </div>
                             <div className="form-group" style={{ marginBottom: 20 }}>

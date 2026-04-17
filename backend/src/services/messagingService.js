@@ -43,20 +43,40 @@ export const handleInbound = async (payload) => {
 
         let ticketId;
         if (!existingTicket.length) {
-            // Auto-calculate ETR (default 4 hours)
-            const etr = new Date();
-            etr.setHours(etr.getHours() + 4);
+            // -- Enterprise SLA Enhancement --
+            const { resolveSlaPolicy, generateTicketNumber, getSlaCalendar, resolveTicketTimezone } = await import("../modules/sla/slaPolicyService.js");
+            const { SlaCalculator } = await import("./sla/calculator.js");
+            
+            // 1. Resolve Default Priority P3 (Medium)
+            const [prioRows] = await pool.query(`SELECT id FROM priorities WHERE name = 'P3' LIMIT 1`);
+            const priorityId = prioRows[0]?.id || 3; // Fallback to id 3
+            
+            // 2. Resolve SLA & ETR
+            const resolvedTz = await resolveTicketTimezone(pool, { customerId });
+            const slaPolicy = await resolveSlaPolicy(pool, { customerId, priorityId });
+            const calendar = await getSlaCalendar(pool);
+            const calculator = new SlaCalculator(pool);
+            const now = moment().tz(resolvedTz || 'Asia/Kolkata').format("YYYY-MM-DD HH:mm:ss");
+            const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendar);
+            const etr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
 
-            const ticketNumber = `TKT-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
+            // 3. Dynamic Numbering
+            const ticketNumber = await generateTicketNumber(pool, priorityId);
 
             // Get default project
             const [project] = await pool.query("SELECT id FROM projects LIMIT 1");
             const projectId = project[0]?.id || 1;
 
             const [newTicket] = await pool.query(
-                `INSERT INTO tickets (ticket_number, customer_id, project_id, category, description, source, etr, created_by) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-                [ticketNumber, customerId, projectId, 'Inquiry', body.substring(0, 100), channel, etr]
+                `INSERT INTO tickets (
+                    ticket_number, customer_id, project_id, category, priority_id, description, source, etr, 
+                    str, created_by, sla_policy_id, sla_version, resolved_timezone
+                ) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+                [
+                    ticketNumber, customerId, projectId, 'Inquiry', priorityId, body.substring(0, 500), channel, etr, 
+                    now, slaPolicy.id, slaPolicy.version, resolvedTz
+                ]
             );
             ticketId = newTicket.insertId;
 

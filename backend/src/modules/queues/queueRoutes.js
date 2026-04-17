@@ -10,7 +10,7 @@ router.get("/", getQueues);
 router.get("/:id", getQueueById);
 router.post("/", requireRole("superadmin", "manager", "gm"), createQueue);
 router.put("/:id", requireRole("superadmin", "manager", "gm"), updateQueue);
-router.delete("/:id", requireRole("superadmin"), deleteQueue);
+router.delete("/:id", requireRole("superadmin", "manager", "gm"), deleteQueue);
 router.post("/:id/agents", requireRole("superadmin", "manager", "gm"), assignAgents);
 
 export default router;

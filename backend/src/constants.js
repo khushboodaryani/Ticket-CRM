@@ -17,7 +17,9 @@ export const TICKET_STATUS = {
   CLOSED: "closed",
 };
 
-export const PRIORITY = ["P1", "P2", "P3", "P4", "P5"];
+// Default priorities — actual configured priorities are stored in sla_policies table (dynamic P1–P10+).
+// This array is kept as a UI fallback only. Use getConfiguredPriorities() for validation.
+export const PRIORITY = ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10"];
 
 export const TICKET_SOURCE = {
   EMAIL: "email",

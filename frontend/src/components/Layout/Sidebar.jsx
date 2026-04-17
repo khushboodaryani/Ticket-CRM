@@ -1,13 +1,32 @@
 // src/components/Layout/Sidebar.jsx
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { useEffect, useState } from 'react'
+import api from '../../api/axios'
 
-// Dashboard is visible to ALL roles - each sees their own scoped data
-const NAV_ITEMS = [
+const DASHBOARD_ITEMS = [
     {
-        label: 'Dashboard', path: '/dashboard',
+        label: 'Enterprise HQ', path: '/dashboard', end: true,
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
     },
+    {
+        label: 'Command Center', path: '/monitoring/command-center',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>,
+        roles: ['superadmin', 'gm', 'manager']
+    },
+    {
+        label: 'Queue Roster', path: '/monitoring/queues',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>,
+        roles: ['superadmin', 'gm', 'manager']
+    },
+    {
+        label: 'Agent Roster', path: '/monitoring/agents',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><polyline points="16 11 18 13 22 9"/></svg>,
+        roles: ['superadmin', 'gm', 'manager']
+    },
+];
+
+const NAV_ITEMS = [
     {
         label: 'All Tickets', path: '/tickets', end: true,
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" /><rect x="8" y="2" width="8" height="4" rx="1" ry="1" /></svg>
@@ -31,11 +50,6 @@ const NAV_ITEMS = [
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>,
         roles: ['superadmin', 'gm', 'manager']
     },
-    {
-        label: 'Bulk Import', path: '/tickets/import',
-        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>,
-        roles: ['superadmin', 'gm', 'manager']
-    },
 ]
 
 const MGMT_ITEMS = [
@@ -46,6 +60,17 @@ const MGMT_ITEMS = [
     {
         label: 'Projects', path: '/projects',
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>
+    },
+    {
+        label: 'Workflows', path: '/workflows',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>,
+        roles: ['superadmin', 'gm', 'manager']
+    },
+    {
+        label: 'Domain Approvals', path: '/approvals/domains',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
+        roles: ['superadmin'],
+        hasBadge: true
     },
     {
         label: 'User Admin', path: '/users',
@@ -61,19 +86,14 @@ const CONFIG_ITEMS = [
         roles: ['superadmin', 'gm', 'manager']
     },
     {
-        label: 'Holidays', path: '/holidays',
-        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>,
-        roles: ['superadmin']
-    },
-    {
-        label: 'Workflows', path: '/workflows',
-        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg>,
-        roles: ['superadmin', 'gm', 'manager']
-    },
-    {
         label: 'SLA Settings', path: '/sla',
         icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
         roles: ['superadmin', 'manager']
+    },
+    {
+        label: 'Holidays', path: '/holidays',
+        icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/></svg>,
+        roles: ['superadmin']
     },
 ]
 
@@ -86,23 +106,54 @@ const SOURCE_ICONS = {
 
 export default function Sidebar() {
     const { user, logout, hasRole } = useAuth()
+    const [pendingApprovals, setPendingApprovals] = useState(0)
+    const [dashOpen, setDashOpen] = useState(true)
+
+    // Fetch pending domain approval count for badge (superadmin only)
+    useEffect(() => {
+        if (hasRole('superadmin')) {
+            const fetchCount = () => {
+                api.get('/approvals/domains/pending-count').then(r => {
+                    setPendingApprovals(r.data.count || 0)
+                }).catch(() => {})
+            }
+            fetchCount()
+            const interval = setInterval(fetchCount, 30000) // refresh every 30s
+            return () => clearInterval(interval)
+        }
+    }, [hasRole])
 
     const filterItems = (items) => items.filter(i => !i.roles || i.roles.some(r => hasRole(r)))
 
+    const visibleDash = filterItems(DASHBOARD_ITEMS)
     const visibleNav = filterItems(NAV_ITEMS)
     const visibleMgmt = filterItems(MGMT_ITEMS)
     const visibleConfig = filterItems(CONFIG_ITEMS)
 
-    const renderItems = (items) =>
+    const renderItems = (items, isSub = false) =>
         items.map(item => (
             <NavLink
                 key={item.path}
                 to={item.path}
                 end={item.end}
-                className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                className={({ isActive }) => `nav-item ${isActive ? 'active' : ''} ${isSub ? 'sub-nav' : ''}`}
             >
                 <span className="nav-icon">{item.icon}</span>
                 <span className="nav-label">{item.label}</span>
+                {item.hasBadge && pendingApprovals > 0 && (
+                    <span style={{
+                        background: '#ef4444',
+                        color: 'white',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: '1px 6px',
+                        borderRadius: 10,
+                        marginLeft: 'auto',
+                        minWidth: 18,
+                        textAlign: 'center',
+                        lineHeight: '16px'
+                    }}>{pendingApprovals}</span>
+                )}
             </NavLink>
         ))
 
@@ -121,15 +172,39 @@ export default function Sidebar() {
             </div>
 
             <div className="sidebar-nav">
-                {/* Overview section - always visible (Dashboard shown to all) */}
+                {/* Unified Intelligence Portals Dropdown */}
+                {visibleDash.length > 0 && (
+                    <>
+                        <div 
+                            className="nav-item parent-nav" 
+                            onClick={() => setDashOpen(!dashOpen)}
+                            style={{ cursor: 'pointer', marginBottom: 4 }}
+                        >
+                            <span className="nav-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12H3m18-6H3m18 12H3"/></svg>
+                            </span>
+                            <span className="nav-label" style={{ fontWeight: 800 }}>Dashboards</span>
+                            <span style={{ marginLeft: 'auto', transition: 'transform 0.2s', transform: dashOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                            </span>
+                        </div>
+                        {dashOpen && (
+                            <div className="sub-menu-container" style={{ marginBottom: 16 }}>
+                                {renderItems(visibleDash, true)}
+                            </div>
+                        )}
+                    </>
+                )}
+
+                {/* Primary Ops section */}
                 {visibleNav.length > 0 && (
                     <>
-                        <div className="nav-section-label">Overview</div>
+                        <div className="nav-section-label">Operations</div>
                         {renderItems(visibleNav)}
                     </>
                 )}
 
-                {/* Management section - hide label if no items visible */}
+                {/* Management section */}
                 {visibleMgmt.length > 0 && (
                     <>
                         <div className="nav-section-label" style={{ marginTop: 16 }}>Management</div>
@@ -137,14 +212,39 @@ export default function Sidebar() {
                     </>
                 )}
 
-                {/* System section - hide label if no items visible (e.g. agents/TLs won't see this) */}
+                {/* System section */}
                 {visibleConfig.length > 0 && (
                     <>
-                        <div className="nav-section-label" style={{ marginTop: 16 }}>System</div>
+                        <div className="nav-section-label" style={{ marginTop: 16 }}>System Config</div>
                         {renderItems(visibleConfig)}
                     </>
                 )}
             </div>
+
+            <style>{`
+                .sub-nav { 
+                    padding-left: 44px !important;
+                    height: 38px;
+                    font-size: 12px;
+                    opacity: 0.85;
+                }
+                .sub-nav.active {
+                    opacity: 1;
+                    background: rgba(255,255,255,0.05);
+                }
+                .nav-section-label {
+                    font-size: 10px;
+                    text-transform: uppercase;
+                    letter-spacing: 1px;
+                    font-weight: 800;
+                    color: var(--text-muted);
+                    padding: 0 16px;
+                    margin-bottom: 8px;
+                }
+                .parent-nav:hover {
+                    background: rgba(255,255,255,0.03);
+                }
+            `}</style>
 
             <div className="sidebar-footer">
                 <div className="sidebar-user" onClick={() => { if (confirm('Logout?')) logout() }}>

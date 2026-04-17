@@ -24,7 +24,18 @@ import Queues from './pages/Queues'
 import WorkflowBuilder from './pages/WorkflowBuilder'
 import Analytics from './pages/Analytics'
 import SlaSettings from './pages/SlaSettings'
+import DomainApprovals from './pages/DomainApprovals'
 import ResetPassword from './pages/ResetPassword'
+
+// Monitoring Dashboard Suite
+import QueuesDashboard from './pages/Monitoring/QueuesDashboard'
+import AgentsDashboard from './pages/Monitoring/AgentsDashboard'
+import CommandCenter from './pages/Monitoring/CommandCenter'
+
+// Operation Portals (Full Page)
+import AgentPortalPage from './pages/Monitoring/AgentPortalPage'
+import QueuePortalPage from './pages/Monitoring/QueuePortalPage'
+import ShiftPortalPage from './pages/Monitoring/ShiftPortalPage'
 
 
 export default function App() {
@@ -86,6 +97,30 @@ export default function App() {
                                 } />
                                 <Route path="/analytics" element={
                                     <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Analytics /></ProtectedRoute>
+                                } />
+                                <Route path="/approvals/domains" element={
+                                    <ProtectedRoute roles={['superadmin']}><DomainApprovals /></ProtectedRoute>
+                                } />
+
+                                <Route path="/monitoring/queues" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><QueuesDashboard /></ProtectedRoute>
+                                } />
+                                <Route path="/monitoring/agents" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><AgentsDashboard /></ProtectedRoute>
+                                } />
+                                <Route path="/monitoring/command-center" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><CommandCenter /></ProtectedRoute>
+                                } />
+
+                                {/* Full Page Portals */}
+                                <Route path="/monitoring/agent/:id" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager', 'tl']}><AgentPortalPage /></ProtectedRoute>
+                                } />
+                                <Route path="/monitoring/queue/:id" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager', 'tl']}><QueuePortalPage /></ProtectedRoute>
+                                } />
+                                <Route path="/monitoring/shift/:id" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager', 'tl']}><ShiftPortalPage /></ProtectedRoute>
                                 } />
 
                             </Route>

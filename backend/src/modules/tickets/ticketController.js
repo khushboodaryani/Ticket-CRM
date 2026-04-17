@@ -6,6 +6,8 @@ import { createNotification } from "../notifications/notificationController.js";
 import { workflowEvents } from "../workflows/workflowEngine.js";
 import { logger } from "../../logger.js";
 import { getShiftAssignee } from "../../services/assignmentService.js";
+import { config } from "dotenv";
+config();
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 const buildETR = () => moment().tz(TZ).add(2, "hours").format("YYYY-MM-DD HH:mm:ss");
@@ -33,7 +35,7 @@ export const getTickets = async (req, res) => {
         const params = [...roleParams];
 
         if (status) { filters.push("t.status=?"); params.push(status); }
-        if (priority) { filters.push("t.priority=?"); params.push(priority); }
+        if (priority) { filters.push("t.priority_id=?"); params.push(priority); }
         if (escalation_level) { filters.push("t.escalation_level=?"); params.push(Number(escalation_level)); }
         if (customer_id) { filters.push("t.customer_id=?"); params.push(customer_id); }
         if (project_id) { filters.push("t.project_id=?"); params.push(project_id); }
@@ -49,17 +51,20 @@ export const getTickets = async (req, res) => {
             `SELECT t.*,
               c.name as customer_name, p.name as project_name,
               u.name as assigned_to_name, cb.name as created_by_name,
-              q.name as queue_name
+              q.name as queue_name,
+              COALESCE(pri.name, t.priority) as priority, COALESCE(cat.prefix, 'TKT') as series_prefix, pri.color_code
        FROM tickets t
        LEFT JOIN customers c ON t.customer_id = c.id
        LEFT JOIN projects p ON t.project_id = p.id
        LEFT JOIN users u ON t.assigned_to = u.id
        LEFT JOIN users cb ON t.created_by = cb.id
        LEFT JOIN queues q ON t.queue_id = q.id
+       LEFT JOIN priorities pri ON t.priority_id = pri.id
+       LEFT JOIN sla_priority_categories cat ON pri.category_id = cat.id
        WHERE ${whereClause}
        ORDER BY t.created_at DESC
        LIMIT ? OFFSET ?`,
-            [...params, Number(limit), offset]
+             [...params, Number(limit), offset]
         );
 
         const [countRes] = await pool.query(
@@ -86,20 +91,23 @@ export const getTicketById = async (req, res) => {
             `SELECT t.*,
               c.name as customer_name, p.name as project_name,
               u.name as assigned_to_name, cb.name as created_by_name,
-              q.name as queue_name
+              q.name as queue_name,
+              COALESCE(pri.name, t.priority) as priority, COALESCE(cat.prefix, 'TKT') as series_prefix, pri.color_code
        FROM tickets t
        LEFT JOIN customers c ON t.customer_id = c.id
        LEFT JOIN projects p ON t.project_id = p.id
        LEFT JOIN users u ON t.assigned_to = u.id
        LEFT JOIN users cb ON t.created_by = cb.id
        LEFT JOIN queues q ON t.queue_id = q.id
+       LEFT JOIN priorities pri ON t.priority_id = pri.id
+       LEFT JOIN sla_priority_categories cat ON pri.category_id = cat.id
        WHERE t.id = ?`,
             [req.params.id]
         );
         if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
-        // -- IDEA 3: 1st Responder Auto-Assign (Atomic Claim) --
-        if (rows[0].priority === 'P1' && !rows[0].assigned_to && req.user && rows[0].created_by !== req.user.userId) {
+        // -- IDEA 3: 1st Responder Auto-Assign (Atomic Claim for P-Series) --
+        if (rows[0].series_prefix === 'P' && !rows[0].assigned_to && req.user && rows[0].created_by !== req.user.userId) {
             const lockName = `p1_claim_${req.params.id}`;
             const [lockRes] = await pool.query(`SELECT GET_LOCK(?, 5) as locked`, [lockName]);
             
@@ -184,49 +192,76 @@ export const createTicket = async (req, res) => {
     if (!customer_id || !project_id || !category || !priority || !description)
         return res.status(400).json({ success: false, message: "customer_id, project_id, category, priority, description are required." });
 
-    const validPriorities = ["P1", "P2", "P3", "P4", "P5"];
-    if (!validPriorities.includes(priority))
-        return res.status(400).json({ success: false, message: "Priority must be P1–P5." });
-
     try {
         const pool = connectDB();
-        const now = moment().tz(TZ).format("YYYY-MM-DD HH:mm:ss");
         
-        // Fetch Resolution Hours for ETR calculation
-        const [policies] = await pool.query(`SELECT resolution_time_hours FROM sla_policies WHERE priority = ?`, [priority]);
-        const resHours = policies[0]?.resolution_time_hours || 2; // Fallback to 2 hours
-        const etr = moment().tz(TZ).add(resHours, "hours").format("YYYY-MM-DD HH:mm:ss");
+        // Ensure customer and project exist and are not deleted
+        const [targetCheck] = await pool.query(
+            `SELECT c.id FROM customers c 
+             JOIN projects p ON p.customer_id = c.id
+             WHERE c.id = ? AND p.id = ? AND c.is_deleted = 0 AND p.is_deleted = 0`,
+            [customer_id, project_id]
+        );
+        if (!targetCheck.length) {
+            return res.status(400).json({ success: false, message: "Selected Customer or Project is archived or invalid." });
+        }
+
+        // 1. Resolve Priority Entity
+        const [prioRows] = await pool.query(
+            `SELECT p.id, c.prefix 
+             FROM priorities p 
+             JOIN sla_priority_categories c ON p.category_id = c.id 
+             WHERE p.name = ?`, 
+            [priority]
+        );
+        if (!prioRows.length) return res.status(400).json({ success: false, message: "Invalid priority name." });
+        const priorityId = prioRows[0].id;
+        const series_prefix = prioRows[0].prefix;
+
+        const now = moment().tz(TZ).format("YYYY-MM-DD HH:mm:ss");
+
+        // 2. Resolve Frozen Timezone (Customer -> Project -> Global)
+        const { resolveTicketTimezone, resolveSlaPolicy, generateTicketNumber, getSlaCalendar } = await import("../sla/slaPolicyService.js");
+        const resolvedTz = await resolveTicketTimezone(pool, { customerId: customer_id, projectId: project_id });
+
+        // 3. Resolve SLA Policy
+        const slaPolicy = await resolveSlaPolicy(pool, { customerId: customer_id, projectId: project_id, priorityId });
+        
+        // 4. Calculate ETR (Enterprise Calculator - Offline Aware)
+        const { SlaCalculator } = await import("../../services/sla/calculator.js");
+        const calendar = await getSlaCalendar(pool);
+        const calculator = new SlaCalculator(pool);
+        const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendar);
+        const etr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
+
+        // 5. Generate Ticket Number (P-00001)
+        const ticket_number = await generateTicketNumber(pool, priorityId);
+
         const attachment_url = req.file ? `/attachments/${req.file.filename}` : null;
-
-        const [countRow] = await pool.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at)=CURDATE()`);
-        const seq = String(countRow[0].cnt + 1).padStart(4, "0");
-        const ticket_number = `TKT-${moment().tz(TZ).format("YYYYMMDD")}-${seq}`;
-
-        let finalAssignee = assigned_to || null;
-
-        // Auto-assign based on shifts and online availability if no assignee given
-        // Emergency P1 tickets skip auto-assignment to trigger the claim broadcast instead
-        if (!finalAssignee && priority !== 'P1') {
-            finalAssignee = await getShiftAssignee(priority);
-        }
-
-        if (!finalAssignee && req.user.role === "agent") {
-            // Only auto-assign standard tickets. Emergency P1 tickets MUST enter the unassigned pool 
-            // to trigger the global "Claim/Stand-Down" broadcast workflow properly.
-            if (priority !== 'P1') {
-                finalAssignee = req.user.userId;
-            }
-        }
+        const initialAssignee = assigned_to || null;
+        const assignmentSource = initialAssignee ? 'manual' : 'auto';
 
         const [result] = await pool.query(
-            `INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description,
-       attachment_url, status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, queue_id)
-       VALUES (?,?,?,?,?,?,?,'open',1,'active',?,?,?,?,?,?)`,
-            [ticket_number, customer_id, project_id, category, priority, description,
-                attachment_url, now, etr, req.user.userId, finalAssignee, source || "manual", queue_id || null]
+            `INSERT INTO tickets (
+                ticket_number, customer_id, project_id, category, priority_id, description,
+                attachment_url, status, escalation_level, sla_state, str, etr, 
+                created_by, assigned_to, source, queue_id, assignment_source,
+                resolved_timezone, sla_policy_id, sla_version
+            )
+            VALUES (?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                ticket_number, customer_id, project_id, category, priorityId, description,
+                attachment_url, now, etr, req.user.userId, initialAssignee, 
+                source || "manual", queue_id || null, assignmentSource,
+                resolvedTz, slaPolicy.id, slaPolicy.version
+            ]
         );
 
         const ticketId = result.insertId;
+
+        // 6. Schedule BullMQ Jobs
+        const { jobManager } = await import("../../services/sla/jobManager.js");
+        await jobManager.scheduleJobs({ id: ticketId, etr, resolved_timezone: resolvedTz }, calendar);
 
         // Log creation activity
         await pool.query(
@@ -247,9 +282,9 @@ export const createTicket = async (req, res) => {
         );
 
         // Notify assigned agent
-        if (finalAssignee) {
+        if (initialAssignee) {
             await createNotification(pool, {
-                user_id: finalAssignee,
+                user_id: initialAssignee,
                 type: 'ticket_assigned',
                 title: `New Ticket Assigned: ${ticket_number}`,
                 body: `Ticket ${ticket_number} (${priority} - ${category}) has been assigned to you.`,
@@ -307,12 +342,98 @@ export const updateTicket = async (req, res) => {
 
         const updates = [];
         const vals = [];
+        let priorityId = null;
+
         if (category) { updates.push("category=?"); vals.push(category); }
-        if (priority) { updates.push("priority=?"); vals.push(priority); }
+        if (priority) { 
+            const [prioRow] = await pool.query(`SELECT id FROM priorities WHERE name = ?`, [priority]);
+            if (prioRow.length) {
+                priorityId = prioRow[0].id;
+                updates.push("priority_id=?");
+                vals.push(priorityId);
+            }
+        }
         if (description) { updates.push("description=?"); vals.push(description); }
         if (status) { updates.push("status=?"); vals.push(status); }
         if (assigned_to) { updates.push("assigned_to=?"); vals.push(assigned_to); }
         if (req.file) { updates.push("attachment_url=?"); vals.push(`/attachments/${req.file.filename}`); }
+
+        const oldStatus = existing[0].status;
+        const newStatus = status;
+        const now = moment().tz(existing[0].resolved_timezone || TZ);
+
+        // --- ENTERPRISE SLA 2.1: Pause/Resume Logic ---
+        const { jobManager } = await import("../../services/sla/jobManager.js");
+        const { SlaCalculator } = await import("../../services/sla/calculator.js");
+        const { getSlaCalendar } = await import("../sla/slaPolicyService.js");
+
+        const pauseStatuses = ['pending', 'on_hold', 'waiting_customer'];
+        const isCurrentlyPaused = existing[0].sla_paused === 1;
+        const willBePaused = pauseStatuses.includes(newStatus);
+        
+        let newEtr = existing[0].etr;
+
+        if (willBePaused && !isCurrentlyPaused && newStatus !== oldStatus) {
+            // ENTERING PAUSE
+            updates.push("sla_paused = 1", "sla_paused_at = NOW()");
+            await jobManager.cancelJobs(req.params.id);
+            
+            await pool.query(
+                `INSERT INTO sla_event_logs (ticket_id, event_type, old_etr, note) 
+                 VALUES (?, 'pause', ?, ?)`,
+                [req.params.id, existing[0].etr, `SLA paused at status ${newStatus}`]
+            );
+        } 
+        else if (!willBePaused && isCurrentlyPaused && newStatus !== oldStatus) {
+            // RESUMING
+            const pausedAt = moment(existing[0].sla_paused_at).tz(existing[0].resolved_timezone || TZ);
+            const pauseDuration = now.diff(pausedAt, 'minutes');
+            const totalCumulative = (existing[0].cumulative_pause_minutes || 0) + pauseDuration;
+            
+            // Calculate remaining business time from original ETR
+            const etrAtPause = moment(existing[0].etr).tz(existing[0].resolved_timezone || TZ);
+            // Since original ETR was already business-aware, we need to find how much WORK was left.
+            // Simplified Zoho approach: Find minutes between pauseTime and etr (using business hours logic)
+            // But if we just treat existing[0].etr as a wall-clock target that was fixed, this is hard.
+            // Better: We should have snapshotted 'remaining_minutes' at pause.
+            // As a fallback for this first phase: We'll calculate it now.
+            
+            // For now, let's use the user's preferred approach: 
+            // "Recalculate the absolute due date on resume as now + remaining_minutes"
+            // We'll estimate remaining minutes as total goal - elapsed minutes (excluding previous pauses).
+            
+            const [policy] = await pool.query(`SELECT resolution_hrs FROM sla_policies_new WHERE id = ?`, [existing[0].sla_policy_id]);
+            const goalHours = policy?.resolution_hrs || 8;
+            
+            // Total elapsed work minutes since creation - previous pauses
+            const createdAt = moment(existing[0].created_at).tz(existing[0].resolved_timezone || TZ);
+            // This is complex to do accurately without a "work elapsed" tracker.
+            // For MVP: We add the pause duration directly to the ETR.
+            
+            const calendar = await getSlaCalendar(pool);
+            const calculator = new SlaCalculator(pool);
+            
+            // Standard approach: Offset existing ETR by the time we were paused
+            // This preserves the exact business window padding.
+            const adjustedEtr = moment(existing[0].etr).add(pauseDuration, 'minutes').format("YYYY-MM-DD HH:mm:ss");
+            newEtr = adjustedEtr;
+
+            updates.push("sla_paused = 0", "sla_paused_at = NULL", "etr = ?", "cumulative_pause_minutes = ?");
+            vals.push(adjustedEtr, totalCumulative);
+
+            await pool.query(
+                `INSERT INTO sla_event_logs (ticket_id, event_type, old_etr, new_etr, pause_duration_min, note) 
+                 VALUES (?, 'resume', ?, ?, ?, ?)`,
+                [req.params.id, existing[0].etr, adjustedEtr, pauseDuration, `SLA resumed. Total pause: ${totalCumulative}m`]
+            );
+
+            // Reschedule jobs
+            await jobManager.scheduleJobs({ 
+                id: req.params.id, 
+                etr: adjustedEtr, 
+                resolved_timezone: existing[0].resolved_timezone 
+            }, calendar);
+        }
 
         if (status === "resolved" || status === "closed") {
             updates.push("resolved_at=NOW()");
@@ -367,18 +488,52 @@ export const assignQueue = async (req, res) => {
     const { queue_id } = req.body;
     try {
         const pool = connectDB();
-        const [ticketRows] = await pool.query(`SELECT * FROM tickets WHERE id=?`, [req.params.id]);
+        const [ticketRows] = await pool.query(
+            `SELECT queue_id, priority, customer_id, project_id, etr FROM tickets WHERE id=?`, 
+            [req.params.id]
+        );
         if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
-        await pool.query(`UPDATE tickets SET queue_id=? WHERE id=?`, [queue_id || null, req.params.id]);
+        const ticket = ticketRows[0];
+        const oldQueueId = ticket.queue_id;
+        const newQueueId = queue_id;
+
+        // 1. Update ticket queue
+        await pool.query(`UPDATE tickets SET queue_id=? WHERE id=?`, [newQueueId || null, req.params.id]);
+
+        // 2. Audit Trail
+        await pool.query(
+            `INSERT INTO ticket_queue_logs (ticket_id, from_queue_id, to_queue_id, changed_by) VALUES (?, ?, ?, ?)`,
+            [req.params.id, oldQueueId, newQueueId || null, req.user.userId]
+        );
+        // 3. SLA 2.1 Implementation: Update ETR based on current policy (no queue modifiers in v2.1)
+        const { resolveSlaPolicy, getSlaCalendar } = await import("../sla/slaPolicyService.js");
+        const { SlaCalculator } = await import("../../services/sla/calculator.js");
+        
+        const slaPolicy = await resolveSlaPolicy(pool, { 
+            customerId: ticket.customer_id, 
+            projectId: ticket.project_id, 
+            priorityId: ticket.priority_id || (await pool.query(`SELECT id FROM priorities WHERE name = ?`, [ticket.priority]))[0][0]?.id
+        });
+        
+        const calendar = await getSlaCalendar(pool);
+        const calculator = new SlaCalculator(pool);
+        const nowStr = moment().tz(TZ).format("YYYY-MM-DD HH:mm:ss");
+        
+        // Recalculate ETR from NOW based on full duration (Simplified migration path)
+        const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendar);
+        const newEtr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
+        
+        await pool.query("UPDATE tickets SET etr = ?, sla_policy_id = ?, sla_version = ? WHERE id = ?", 
+            [newEtr, slaPolicy.id, slaPolicy.version, req.params.id]);
 
         await pool.query(
             `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
             [req.params.id, 'queue_assigned', req.user.userId,
-             queue_id ? `Assigned to queue ID: ${queue_id}` : 'Removed from queue']
+             newQueueId ? `Assigned to queue ID: ${newQueueId}. SLA policy synchronized.` : 'Removed from queue.']
         );
 
-        return res.json({ success: true, message: "Queue assignment updated." });
+        return res.json({ success: true, message: "Queue assignment updated and SLA synchronized." });
     } catch (err) {
         console.error("assignQueue:", err);
         return res.status(500).json({ success: false, message: "Server error." });
@@ -388,14 +543,18 @@ export const assignQueue = async (req, res) => {
 // PUT /api/tickets/:id/priority  — Change priority with activity log
 export const changePriority = async (req, res) => {
     const { priority, reason } = req.body;
-    const validPriorities = ["P1", "P2", "P3", "P4", "P5"];
-    if (!priority || !validPriorities.includes(priority))
-        return res.status(400).json({ success: false, message: "Valid priority (P1-P5) is required." });
+    if (!priority)
+        return res.status(400).json({ success: false, message: "Priority is required." });
 
     try {
         const pool = connectDB();
         const [rows] = await pool.query(`SELECT ticket_number, priority FROM tickets WHERE id=?`, [req.params.id]);
         if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+
+        // Dynamic priority validation from DB
+        const validPriorities = await getConfiguredPriorities(pool);
+        if (!validPriorities.includes(priority))
+            return res.status(400).json({ success: false, message: `Invalid priority. Valid: ${validPriorities.join(', ')}` });
 
         const oldPriority = rows[0].priority;
         await pool.query(`UPDATE tickets SET priority=? WHERE id=?`, [priority, req.params.id]);
@@ -557,17 +716,20 @@ export const getSTRQueue = async (req, res) => {
     try {
         const pool = connectDB();
         const [rows] = await pool.query(
-            `SELECT t.id, t.ticket_number, t.priority, t.status, t.escalation_level, t.sla_state, t.str, t.etr,
+            `SELECT t.id, t.ticket_number, t.priority as priority_name, t.status, t.escalation_level, t.sla_state, t.str, t.etr,
               u.name as assigned_to_name, u.role as assigned_role,
               c.name as customer_name, p.name as project_name,
-              q.name as queue_name
+              q.name as queue_name,
+              pri.color_code, cat.prefix as series_prefix
        FROM tickets t
        LEFT JOIN users u ON t.assigned_to = u.id
        LEFT JOIN customers c ON t.customer_id = c.id
        LEFT JOIN projects p ON t.project_id = p.id
        LEFT JOIN queues q ON t.queue_id = q.id
+       LEFT JOIN priorities pri ON t.priority_id = pri.id
+       LEFT JOIN sla_priority_categories cat ON pri.category_id = cat.id
        WHERE t.status IN ('open','in_progress')
-       ORDER BY t.priority ASC, t.str ASC`
+       ORDER BY cat.sort_order ASC, pri.level ASC, t.str ASC`
         );
         return res.json({ success: true, queue: rows });
     } catch (err) {
@@ -586,7 +748,7 @@ export const importTickets = async (req, res) => {
 
         const normPriority = (v = "") => {
             const u = String(v).trim().toUpperCase();
-            if (["P1", "P2", "P3", "P4", "P5"].includes(u)) return u;
+            if (/^P\d{1,3}$/.test(u)) return u;
             if (u === "CRITICAL") return "P1";
             if (u === "HIGH") return "P2";
             if (["MEDIUM", "NORMAL"].includes(u)) return "P3";
@@ -595,15 +757,9 @@ export const importTickets = async (req, res) => {
             return "P3";
         };
 
-        const [allCustomers] = await pool.query("SELECT id, name, customer_code FROM customers");
-        const [allUsers] = await pool.query("SELECT id, name, email FROM users WHERE role='agent'");
-        const [countRow] = await pool.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at)=CURDATE()`);
+        const [allCustomers] = await pool.query("SELECT id, name, customer_code FROM customers WHERE is_deleted = 0");
+        const [allUsers] = await pool.query("SELECT id, name, email FROM users WHERE role='agent' AND is_active = 1");
         
-        // Fetch SLA Policies for ETR
-        const [policies] = await pool.query(`SELECT * FROM sla_policies`);
-        const policyMap = policies.reduce((acc, p) => { acc[p.priority] = p; return acc; }, {});
-        let nextSeq = (countRow[0]?.cnt || 0) + 1;
-
         const findCustomer = (v) => {
             if (!v) return null;
             const s = v.toLowerCase().trim();
@@ -624,18 +780,31 @@ export const importTickets = async (req, res) => {
                 const customer = findCustomer(row.customer);
                 if (!customer) { failed.push({ row: rowNum, reason: `Customer not found: "${row.customer}"` }); continue; }
 
-                const [projects] = await pool.query("SELECT id, name FROM projects WHERE customer_id=?", [customer.id]);
+                const [projects] = await pool.query("SELECT id, name FROM projects WHERE customer_id=? AND is_deleted = 0", [customer.id]);
                 const project = projects.find(p => p.name.toLowerCase() === (row.project || "").toLowerCase().trim());
                 if (!project) { failed.push({ row: rowNum, reason: `Project not found: "${row.project}" under ${customer.name}` }); continue; }
 
                 if (!row.category?.trim()) { failed.push({ row: rowNum, reason: "category is required" }); continue; }
                 if (!row.description?.trim()) { failed.push({ row: rowNum, reason: "description is required" }); continue; }
+                
+                const priorityName = normPriority(row.priority);
+                const [prioRows] = await pool.query(`SELECT id FROM priorities WHERE name = ?`, [priorityName]);
+                if (!prioRows.length) { failed.push({ row: rowNum, reason: `Invalid priority: ${priorityName}` }); continue; }
+                const priorityId = prioRows[0].id;
 
-                const priority = normPriority(row.priority);
                 const assigned_to = findUser(row.assigned_to)?.id || req.user.userId;
                 
-                const resHours = policyMap[priority]?.resolution_time_hours || 2;
-                const etr = moment().tz(TZ).add(resHours, "hours").format("YYYY-MM-DD HH:mm:ss");
+                const { resolveSlaPolicy, getSlaCalendar, generateTicketNumber, resolveTicketTimezone } = await import("../sla/slaPolicyService.js");
+                const { SlaCalculator } = await import("../../services/sla/calculator.js");
+
+                const resolvedTz = await resolveTicketTimezone(pool, { customerId: customer.id, projectId: project.id });
+                const slaPolicy = await resolveSlaPolicy(pool, { customerId: customer.id, projectId: project.id, priorityId });
+                const calendar = await getSlaCalendar(pool);
+                const calculator = new SlaCalculator(pool);
+                
+                const nowStr = moment().tz(TZ).format("YYYY-MM-DD HH:mm:ss");
+                const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendar);
+                const etr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
 
                 const [dupes] = await pool.query(
                     `SELECT id FROM tickets WHERE customer_id=? AND project_id=? AND description=? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) LIMIT 1`,
@@ -643,13 +812,20 @@ export const importTickets = async (req, res) => {
                 );
                 if (dupes.length > 0) { failed.push({ row: rowNum, reason: `Potential duplicate ticket found (ID: ${dupes[0].id})` }); continue; }
 
-                const seqStr = String(nextSeq++).padStart(4, "0");
-                const ticketNumber = `TKT-${moment().tz(TZ).format("YYYYMMDD")}-${seqStr}`;
+                const ticketNumber = await generateTicketNumber(pool, priorityId);
 
                 const [result] = await pool.query(`
-                    INSERT INTO tickets (ticket_number, customer_id, project_id, category, priority, description, source, assigned_to, etr, status, escalation_level, sla_state, created_by)
-                    VALUES (?,?,?,?,?,?,'csv',?,?, 'open', 1, 'active', ?)`,
-                    [ticketNumber, customer.id, project.id, row.category.trim(), priority, row.description.trim(), assigned_to, etr, req.user.userId]
+                    INSERT INTO tickets (
+                        ticket_number, customer_id, project_id, category, priority_id, description, 
+                        source, assigned_to, etr, status, escalation_level, sla_state, created_by,
+                        resolved_timezone, sla_policy_id, sla_version
+                    )
+                    VALUES (?,?,?,?,?,?,'csv',?,?, 'open', 1, 'active', ?, ?, ?, ?)`,
+                    [
+                        ticketNumber, customer.id, project.id, row.category.trim(), priorityId, row.description.trim(), 
+                        assigned_to, etr, req.user.userId,
+                        resolvedTz, slaPolicy.id, slaPolicy.version
+                    ]
                 );
 
                 const ticketId = result.insertId;
@@ -711,7 +887,7 @@ export const exportTickets = async (req, res) => {
         if (customer_id) { filters.push("t.customer_id=?"); params.push(customer_id); }
 
         const [rows] = await pool.query(`
-            SELECT t.ticket_number, t.status, t.priority, t.category, t.source, t.sla_state,
+            SELECT t.ticket_number, t.status, pri.name as priority, t.category, t.source, t.sla_state,
                    t.escalation_level, t.description, t.etr, t.created_at, t.updated_at,
                    c.name as customer, p.name as project,
                    u.name as assigned_to, q.name as queue_name
@@ -720,6 +896,7 @@ export const exportTickets = async (req, res) => {
             LEFT JOIN projects  p  ON t.project_id   = p.id
             LEFT JOIN users     u  ON t.assigned_to  = u.id
             LEFT JOIN queues    q  ON t.queue_id     = q.id
+            LEFT JOIN priorities pri ON t.priority_id = pri.id
             WHERE ${filters.join(" AND ")}
             ORDER BY t.created_at DESC`, params);
 

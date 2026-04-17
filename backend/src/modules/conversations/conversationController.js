@@ -85,6 +85,28 @@ export const getConversation = async (req, res) => {
             [conversationIds]
         );
 
+        // Fetch attachments for these messages
+        if (messages.length > 0) {
+            const msgIds = messages.map(m => m.id);
+            const [attRows] = await pool.query(
+                `SELECT id, message_id, original_name, file_type, file_size, visibility
+                 FROM conversation_message_attachments
+                 WHERE message_id IN (?) AND is_deleted = 0`,
+                [msgIds]
+            );
+
+            // Group by message_id
+            const attMap = attRows.reduce((acc, a) => {
+                if (!acc[a.message_id]) acc[a.message_id] = [];
+                acc[a.message_id].push(a);
+                return acc;
+            }, {});
+
+            messages.forEach(m => {
+                m.attachments = attMap[m.id] || [];
+            });
+        }
+
         return res.json({
             success: true,
             conversation: conversations[0],
@@ -100,7 +122,12 @@ export const getConversation = async (req, res) => {
 // POST /api/tickets/:ticketId/conversation/messages
 export const addMessage = async (req, res) => {
     const { message_body, is_internal_note } = req.body;
-    if (!message_body?.trim()) return res.status(400).json({ success: false, message: "message_body is required." });
+    const body = message_body?.trim() || "";
+    const hasFiles = req.files && req.files.length > 0;
+
+    if (!body && !hasFiles) {
+        return res.status(400).json({ success: false, message: "message_body is required." });
+    }
 
     try {
         const pool = connectDB();
@@ -116,21 +143,37 @@ export const addMessage = async (req, res) => {
         if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
         const ticket = ticketRows[0];
 
+        // --- ENTERPRISE SLA 2.1: First Response Guard ---
+        const isInternal = (is_internal_note === '1' || is_internal_note === 1 || is_internal_note === true) ? 1 : 0;
+        
+        if (!isInternal && !ticket.is_first_response_met) {
+            await pool.query(
+                `UPDATE tickets SET is_first_response_met = 1 WHERE id = ?`,
+                [ticketId]
+            );
+            
+            await pool.query(
+                `INSERT INTO sla_event_logs (ticket_id, event_type, note) 
+                 VALUES (?, 'first_response', 'First response SLA met by agent reply')`,
+                [ticketId]
+            );
+            logger.info(`[SLA] First response met for Ticket #${ticket.ticket_number}`);
+        }
+
         const preferredChannel = ticket.source || 'manual';
         const conversation = await getPreferredConversation(pool, ticketId, preferredChannel);
-        const isInternal = is_internal_note ? 1 : 0;
 
         const [msgResult] = await pool.query(
             `INSERT INTO conversation_messages
-             (conversation_id, sender_id, sender_type, sender_name, message_body, is_internal_note)
-             VALUES (?,?,?,?,?,?)`,
-            [conversation.id, req.user.userId, 'agent', req.user.name, message_body.trim(), isInternal]
+             (conversation_id, sender_id, sender_type, sender_name, message_body, is_internal_note, is_sent)
+             VALUES (?,?,?,?,?,?,?)`,
+            [conversation.id, req.user.userId, 'agent', req.user.name, body, isInternal, 0]
         );
 
         const messageId = msgResult.insertId;
 
         // Broadcast real-time message event (Internal CRM Frontend)
-        broadcast("new_message", {
+        const broadcastData = {
             id: messageId,
             conversation_id: conversation.id,
             ticket_id: ticketId,
@@ -138,16 +181,51 @@ export const addMessage = async (req, res) => {
             sender_name: req.user.name,
             sender_type: 'agent',
             sender_role: req.user.role,
-            message_body: message_body.trim(),
+            message_body: body,
             is_internal_note: isInternal,
-            created_at: new Date()
-        });
+            created_at: new Date(),
+            attachments: [] // Will populate if files uploaded
+        };
+
+        // Handle File Uploads
+        if (req.files && req.files.length > 0) {
+            const visibility = isInternal ? 'internal' : 'public';
+            const attParams = [];
+            for (const file of req.files) {
+                attParams.push([
+                    messageId,
+                    1, // Default tenant_id
+                    file.originalname,
+                    file.filename,
+                    file.mimetype,
+                    file.size,
+                    req.user.userId,
+                    visibility
+                ]);
+            }
+
+            const [attResult] = await pool.query(
+                `INSERT INTO conversation_message_attachments 
+                 (message_id, tenant_id, original_name, storage_path, file_type, file_size, uploaded_by, visibility)
+                 VALUES ?`,
+                [attParams]
+            );
+
+            // Fetch created attachments to include in broadcast/response
+            const [newAtts] = await pool.query(
+                `SELECT id, original_name, file_type, file_size, visibility FROM conversation_message_attachments WHERE message_id = ?`,
+                [messageId]
+            );
+            broadcastData.attachments = newAtts;
+        }
+
+        broadcast("new_message", broadcastData);
 
         // Trigger Outbound Channel Adapter if not internal
         if (!isInternal) {
             import("../../services/messagingService.js").then(m => {
                 m.handleOutbound(conversation.id, { 
-                    message: message_body.trim(),
+                    message: body,
                     senderId: req.user.userId,
                     messageId: messageId
                 });
@@ -168,7 +246,7 @@ export const addMessage = async (req, res) => {
 
         const messageType = isInternal ? 'internal note' : 'reply';
         const notifTitle = isInternal ? `📝 Internal Note on ${ticket.ticket_number}` : `💬 New Reply on ${ticket.ticket_number}`;
-        const notifBody = `${req.user.name} added a ${messageType}: "${message_body.trim().slice(0, 80)}..."`;
+        const notifBody = `${req.user.name} added a ${messageType}: "${body.slice(0, 80)}..."`;
 
         for (const userId of toNotify) {
             await createNotification(pool, {

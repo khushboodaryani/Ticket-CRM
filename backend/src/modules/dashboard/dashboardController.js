@@ -14,19 +14,33 @@ export const getDashboard = async (req, res) => {
     try {
         const pool = connectDB();
         const { role, userId } = req.user;
+        const { targetUserId, shiftId } = req.query;
 
         let roleFilter = "1=1";
         const rp = [];
-        if (role === "agent") {
-            roleFilter = "t.assigned_to = ?";
-            rp.push(userId);
-        } else if (role === "tl") {
-            roleFilter = "t.assigned_to IN (SELECT id FROM users WHERE reporting_to = ? OR id = ?)";
-            rp.push(userId, userId);
-        } else if (role === "manager") {
-            roleFilter = "t.escalation_level >= 2";
-        } else if (role === "gm") {
-            roleFilter = "t.escalation_level >= 3";
+
+        // Impersonation / Proxy Logic for Superadmins
+        if ((role === 'superadmin' || role === 'manager' || role === 'gm')) {
+            if (targetUserId) {
+                roleFilter = "t.assigned_to = ?";
+                rp.push(targetUserId);
+            } else if (shiftId) {
+                roleFilter = "t.assigned_to IN (SELECT user_id FROM shift_members WHERE shift_id = ?)";
+                rp.push(shiftId);
+            } else if (role === "manager") {
+                roleFilter = "t.escalation_level >= 2";
+            } else if (role === "gm") {
+                roleFilter = "t.escalation_level >= 3";
+            }
+        } else {
+            // Standard role-based scoping
+            if (role === "agent") {
+                roleFilter = "t.assigned_to = ?";
+                rp.push(userId);
+            } else if (role === "tl") {
+                roleFilter = "t.assigned_to IN (SELECT id FROM users WHERE reporting_to = ? OR id = ?)";
+                rp.push(userId, userId);
+            }
         }
 
         const n = (val) => { const v = parseInt(val); return isNaN(v) ? 0 : v; };
@@ -84,6 +98,54 @@ export const getDashboard = async (req, res) => {
              ORDER BY el.escalated_at DESC LIMIT 10`
         );
 
+        const [recentTickets] = await pool.query(
+            `SELECT t.id, t.ticket_number, t.subject, t.status, t.priority, t.etr, t.created_at,
+                t.source, t.category, t.escalation_level as level,
+                u.name as assigned_to_name,
+                c.name as customer_name
+             FROM tickets t 
+             LEFT JOIN users u ON t.assigned_to = u.id
+             LEFT JOIN customers c ON t.customer_id = c.id
+             WHERE ${roleFilter} AND t.status NOT IN ('resolved', 'closed')
+             ORDER BY t.created_at DESC LIMIT 100`,
+            rp
+        );
+
+        // --- NEW: Unified Monitoring Data (Transplanted from monitoringController) ---
+        let monitoring = null;
+        if (role === 'superadmin' || role === 'manager' || role === 'gm') {
+            // 1. Response Trends (Last 24 hours)
+            const [trends] = await pool.query(
+                `SELECT HOUR(created_at) as hour, COUNT(*) as count 
+                 FROM tickets 
+                 WHERE created_at > (NOW() - INTERVAL 24 HOUR)
+                 GROUP BY HOUR(created_at)
+                 ORDER BY hour ASC`
+            );
+
+            // 2. Shift-wise Manpower & Health (Decision Engine)
+            const [shifts] = await pool.query(
+                `SELECT s.id, s.name, s.start_time, s.end_time,
+                    (SELECT COUNT(*) FROM shift_members sm WHERE sm.shift_id = s.id) as manpower_available,
+                    (SELECT COUNT(*) FROM tickets t WHERE t.status IN ('open', 'in_progress')) as total_active_tickets,
+                    (SELECT COUNT(*) FROM tickets t WHERE t.sla_state = 'breached' AND t.status NOT IN ('resolved','closed')) as breached_tickets
+                 FROM shifts s`
+            );
+
+            const shiftMetrics = shifts.map(s => {
+                const needed = Math.ceil(s.total_active_tickets / 5);
+                const staffingGap = needed - s.manpower_available;
+                let health = 'healthy', reason = 'Normal Operations';
+                if (s.breached_tickets > 0) { health = 'critical'; reason = `${s.breached_tickets} SLA Breaches`; }
+                else if (staffingGap > 2) { health = 'critical'; reason = `Severely Understaffed (-${staffingGap})`; }
+                else if (staffingGap > 0) { health = 'warning'; reason = `Capacity Warning (-${staffingGap})`; }
+                return { ...s, manpower_needed: needed, health, health_reason: reason };
+            });
+
+            monitoring = { trends, shiftMetrics };
+        }
+        // ------------------------------------------------------------------------------
+
         const summary = {
             total: n(overall[0]?.total),
             open: n(overall[0]?.open_count),
@@ -126,6 +188,8 @@ export const getDashboard = async (req, res) => {
             charts,
             customers,
             recent_escalations,
+            recent_tickets: recentTickets,
+            monitoring // Unified operational data
         });
     } catch (err) {
         console.error("❌ getDashboard Error:", err);

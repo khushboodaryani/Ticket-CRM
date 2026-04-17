@@ -52,6 +52,7 @@ export default function Tickets() {
     const { socket } = useSocket() || {}
     const [tickets, setTickets] = useState([])
     const [queues, setQueues] = useState([])
+    const [priorities, setPriorities] = useState([])
     const [loading, setLoading] = useState(true)
     const [filters, setFilters] = useState({ status: '', priority: '', escalation_level: '', queue_id: '', source: '', search: '', assigned_to: '', startDate: '', endDate: '' })
     const [page, setPage] = useState(1)
@@ -72,6 +73,13 @@ export default function Tickets() {
         try {
             const { data } = await api.get('/queues')
             setQueues(data.queues || [])
+        } catch { }
+    }
+
+    const fetchPriorities = async () => {
+        try {
+            const { data } = await api.get('/sla/priorities')
+            setPriorities(data.priorities || [])
         } catch { }
     }
 
@@ -101,7 +109,7 @@ export default function Tickets() {
         setLoading(false)
     }
 
-    useEffect(() => { fetchQueues(); fetchAgents(); }, [])
+    useEffect(() => { fetchQueues(); fetchAgents(); fetchPriorities(); }, [])
     useEffect(() => { fetchTickets() }, [page, filters, limit])
     
     useEffect(() => {
@@ -269,7 +277,7 @@ export default function Tickets() {
                         </select>
                         <select className="filter-select" value={filters.priority} onChange={e => { setFilters(p => ({ ...p, priority: e.target.value })); setPage(1) }}>
                             <option value="">All Priority</option>
-                            {['P1', 'P2', 'P3', 'P4', 'P5'].map(p => <option key={p} value={p}>{p}</option>)}
+                            {priorities.map(p => <option key={p.id} value={p.name}>{p.name} ({p.category_name})</option>)}
                         </select>
                         <select className="filter-select" value={filters.queue_id} onChange={e => { setFilters(p => ({ ...p, queue_id: e.target.value })); setPage(1) }}>
                             <option value="">All Queues</option>

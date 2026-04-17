@@ -11,6 +11,14 @@ import moment from 'moment-timezone';
 import { sendTicketNotification, sendEmergencyBroadcast, sendParticipantReplyNotification } from '../modules/notifications/emailService.js';
 import { getShiftAssignee } from './assignmentService.js';
 import { createNotification } from '../modules/notifications/notificationController.js';
+import { resolveSlaPolicy, getSlaCalendar, generateTicketNumber, resolveTicketTimezone } from '../modules/sla/slaPolicyService.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ATTACHMENT_DIR = path.resolve(__dirname, '../../public/attachments');
 
 const TZ = process.env.TIMEZONE || 'Asia/Kolkata';
 
@@ -33,7 +41,7 @@ const MAX_MESSAGES_PER_CYCLE = parseInt(process.env.EMAIL_POLLER_BATCH_SIZE || '
 const EMAIL_POLLER_CRON = process.env.EMAIL_POLLER_CRON || '*/15 * * * * *';
 const PARTICIPANT_FALLBACK_WINDOW_HOURS = Math.max(1, parseInt(process.env.EMAIL_FALLBACK_WINDOW_HOURS || '720', 10));
 const STRICT_SUBJECT_PARTICIPANT_MATCH = String(process.env.STRICT_SUBJECT_PARTICIPANT_MATCH || 'false').toLowerCase() === 'true';
-const POLLER_START_TS = Date.now();
+const POLLER_START_TS = Date.now() - (60 * 60 * 1000); // Allow 1-hour backlog for testing session
 const POLLER_START_IMAP_DATE = moment(POLLER_START_TS).tz(TZ).format('DD-MMM-YYYY');
 
 function stripHtml(html = '') {
@@ -109,6 +117,51 @@ function filterParticipants(emails, sender) {
     return emails.filter(e => e && !own.includes(e.toLowerCase().trim()));
 }
 
+/**
+ * Handle extraction and secure storage of email attachments.
+ */
+async function saveEmailAttachments(pool, messageId, attachments) {
+    if (!attachments || attachments.length === 0) return;
+
+    try {
+        const attParams = [];
+        for (const att of attachments) {
+            const originalName = att.filename || 'unnamed_attachment';
+            const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+            const storageName = `att-${uniqueSuffix}${path.extname(originalName).toLowerCase() || ''}`;
+            const storagePath = path.join(ATTACHMENT_DIR, storageName);
+
+            // 1. Save buffer to disk
+            fs.writeFileSync(storagePath, att.content);
+
+            // 2. Prepare metadata
+            attParams.push([
+                messageId,
+                1, // Default tenant_id
+                originalName,
+                storageName,
+                att.contentType || 'application/octet-stream',
+                att.size || 0,
+                null, // Uploaded by system/email
+                'public' // Customer emails are public by default
+            ]);
+        }
+
+        if (attParams.length > 0) {
+            await pool.query(
+                `INSERT INTO conversation_message_attachments 
+                 (message_id, tenant_id, original_name, storage_path, file_type, file_size, uploaded_by, visibility)
+                 VALUES ?`,
+                [attParams]
+            );
+            logger.info(`[EmailPoller] Saved ${attParams.length} attachment(s) for message index ${messageId}`);
+        }
+    } catch (err) {
+        logger.error(`[EmailPoller] Error saving email attachments: ${err.message}`);
+        // Not throwing - defensive ingestion
+    }
+}
+
 // ─── core logic ─────────────────────────────────────────────────────────────
 
 export async function processEmails(connection) {
@@ -145,8 +198,9 @@ export async function processEmails(connection) {
             return;
         }
         lockAcquired = true;
-        // Strict startup window: only process mails from when this server process started.
-        const searchCriteria = ['UNSEEN', ['SINCE', POLLER_START_IMAP_DATE]];
+        // We use 'ALL' instead of 'UNSEEN' because during testing, emails sent to oneself or viewed in the browser are auto-marked as read.
+        // The DB handles deduplication, and SINCE restricts it to recent emails.
+        const searchCriteria = ['ALL', ['SINCE', POLLER_START_IMAP_DATE]];
         const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
 
         let messages = await connection.search(searchCriteria, fetchOptions);
@@ -155,8 +209,15 @@ export async function processEmails(connection) {
         // IMAP SINCE is day-granularity, so enforce exact startup timestamp in-memory.
         const startupFiltered = messages.filter(m => {
             const d = m.attributes?.date ? new Date(m.attributes.date).getTime() : NaN;
-            if (Number.isNaN(d)) return true; // keep if provider omitted internal date
-            return d >= POLLER_START_TS;
+            if (Number.isNaN(d)) {
+                logger.info(`[EmailPoller] Message UID ${m.attributes?.uid} has No Date - keeping.`);
+                return true;
+            }
+            const isEligible = d >= POLLER_START_TS;
+            if (!isEligible) {
+                logger.info(`[EmailPoller] Skipping backlog email (UID: ${m.attributes?.uid}, Date: ${new Date(d).toString()}, PollerStart: ${new Date(POLLER_START_TS).toString()})`);
+            }
+            return isEligible;
         });
         const droppedBacklog = messages.length - startupFiltered.length;
         messages = startupFiltered;
@@ -179,7 +240,7 @@ export async function processEmails(connection) {
                 await processOneEmail(
                     pool, msg, connection,
                     parseInt(process.env.EMAIL_DEFAULT_PROJECT_ID || '1', 10),
-                    process.env.EMAIL_DEFAULT_PRIORITY || 'P3',
+                    process.env.EMAIL_DEFAULT_PRIORITY || 'High', // Default to 'High' category tier
                     parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10)
                 );
                 
@@ -213,6 +274,206 @@ export async function processEmails(connection) {
             }, 200);
         }
     }
+}
+
+/**
+ * Domain-based customer resolution for incoming emails.
+ * Priority order:
+ *   1. Project-level domain match (exact domain → specific project)
+ *   2. Customer-level domain match (domain bubbling up parent domains)
+ *   3. Legacy email match (customers.email exact match)
+ *   4. Unknown domain → hold for superadmin approval
+ *
+ * Rule 5: Public email domains (gmail, yahoo, etc.) skip domain routing
+ *         and go directly to legacy email match or approval.
+ *
+ * Returns: { customerId, projectId, customerName, matchType } or null (held for approval)
+ */
+
+// Public domains that should NEVER be domain-routed
+const PUBLIC_DOMAINS = new Set([
+    'gmail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com',
+    'live.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
+    'protonmail.com', 'proton.me', 'zoho.com', 'zoho.in',
+    'yandex.com', 'mail.com', 'gmx.com', 'gmx.net',
+    'rediffmail.com', 'msn.com', 'mail.ru',
+    'googlemail.com', 'fastmail.com', 'tutanota.com',
+]);
+
+export async function resolveCustomerByDomain(conn, pool, senderEmail, senderName, rawSubject, bodyText, messageId, inReplyTo, references, logId) {
+    const domain = senderEmail.split('@')[1]?.toLowerCase();
+    if (!domain) return null;
+
+    const DEFAULT_PROJECT_ID = parseInt(process.env.EMAIL_DEFAULT_PROJECT_ID || '1', 10);
+    const isPublicDomain = PUBLIC_DOMAINS.has(domain);
+
+    // Rule 5: Skip domain-based routing for public email domains
+    // They go straight to legacy email match or approval
+    if (isPublicDomain) {
+        logger.info(`[EmailPoller] Public domain '${domain}' detected — skipping domain routing, using legacy/approval path.`);
+    }
+
+    if (!isPublicDomain) {
+    // 1. Try exact project-level domain match
+    const [projectMatch] = await conn.query(
+        `SELECT cd.customer_id, cd.project_id, cd.queue_id, c.name as customer_name
+         FROM customer_domains cd
+          JOIN customers c ON cd.customer_id = c.id
+          WHERE cd.domain = ? AND cd.project_id IS NOT NULL AND cd.is_active = 1 AND c.is_deleted = 0
+         LIMIT 1`,
+        [domain]
+    );
+    if (projectMatch.length) {
+        return {
+            customerId: projectMatch[0].customer_id,
+            projectId: projectMatch[0].project_id,
+            queueId: projectMatch[0].queue_id,
+            customerName: projectMatch[0].customer_name,
+            matchType: 'project_domain'
+        };
+    }
+
+    // 2. Try customer-level domain match (bubble up parent domains)
+    //    e.g. for 'shams.multycomm.com' → try ['shams.multycomm.com', 'multycomm.com']
+    const domainParts = domain.split('.');
+    const domainCandidates = [];
+    for (let i = 0; i < domainParts.length - 1; i++) {
+        domainCandidates.push(domainParts.slice(i).join('.'));
+    }
+
+    if (domainCandidates.length > 0) {
+        const [customerMatch] = await conn.query(
+            `SELECT cd.customer_id, cd.queue_id, c.name as customer_name, c.default_project_id
+             FROM customer_domains cd
+              JOIN customers c ON cd.customer_id = c.id
+              WHERE cd.domain IN (?) AND cd.project_id IS NULL AND cd.is_active = 1 AND c.is_deleted = 0
+             ORDER BY LENGTH(cd.domain) DESC
+             LIMIT 1`,
+            [domainCandidates]
+        );
+        if (customerMatch.length) {
+            // Use customer's default_project_id, or fall back to env default
+            let projectId = customerMatch[0].default_project_id || null;
+            if (!projectId) {
+                // Find any project under this customer
+                const [fallbackProject] = await conn.query(
+                    'SELECT id FROM projects WHERE customer_id = ? AND is_deleted = 0 LIMIT 1',
+                    [customerMatch[0].customer_id]
+                );
+                projectId = fallbackProject.length ? fallbackProject[0].id : DEFAULT_PROJECT_ID;
+            }
+            return {
+                customerId: customerMatch[0].customer_id,
+                projectId,
+                queueId: customerMatch[0].queue_id,
+                customerName: customerMatch[0].customer_name,
+                matchType: 'customer_domain'
+            };
+        }
+    }
+    } // end if (!isPublicDomain) — steps 1 & 2 skipped for public domains
+
+    // 3. Legacy: exact email match on customers table
+    const [emailMatch] = await conn.query(
+        'SELECT id, name, default_project_id FROM customers WHERE email = ? AND is_deleted = 0 LIMIT 1',
+        [senderEmail]
+    );
+    if (emailMatch.length) {
+        let projectId = emailMatch[0].default_project_id || null;
+        if (!projectId) {
+            const [fallbackProject] = await conn.query(
+                'SELECT id FROM projects WHERE customer_id = ? AND is_deleted = 0 LIMIT 1',
+                [emailMatch[0].id]
+            );
+            projectId = fallbackProject.length ? fallbackProject[0].id : DEFAULT_PROJECT_ID;
+        }
+        return {
+            customerId: emailMatch[0].id,
+            projectId,
+            queueId: null, // Legacy doesn't support domain-level mapping
+            customerName: emailMatch[0].name,
+            matchType: 'legacy_email'
+        };
+    }
+
+    // 4. Unknown domain → create approval request + held email
+    logger.info(`[EmailPoller] 🔒 Unknown domain '${domain}' from ${senderEmail}. Creating approval request.`);
+
+    try {
+        // Check if an approval request already exists for this domain
+        const [existingRequest] = await conn.query(
+            `SELECT id FROM domain_approval_requests WHERE domain = ? AND status = 'pending' LIMIT 1`,
+            [domain]
+        );
+
+        let approvalRequestId;
+        if (existingRequest.length) {
+            approvalRequestId = existingRequest[0].id;
+            logger.info(`[EmailPoller] Existing pending request found for domain '${domain}' (id=${approvalRequestId}). Adding held email.`);
+        } else {
+            // Create new approval request (first email from this domain)
+            const [arResult] = await conn.query(
+                `INSERT INTO domain_approval_requests (domain, sender_email, sender_name, email_subject, email_body, message_id)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [domain, senderEmail, senderName, rawSubject.slice(0, 500), bodyText.slice(0, 5000), messageId]
+            );
+            approvalRequestId = arResult.insertId;
+            logger.info(`[EmailPoller] Created approval request id=${approvalRequestId} for domain '${domain}'.`);
+        }
+
+        // Insert held email
+        await conn.query(
+            `INSERT INTO held_emails (approval_request_id, sender_email, sender_name, subject, body, message_id, in_reply_to, reference_chain)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [approvalRequestId, senderEmail, senderName, rawSubject.slice(0, 500), bodyText.slice(0, 5000),
+             messageId, inReplyTo || null, (references || []).join(' ') || null]
+        );
+
+        // Update email_logs status to 'held'
+        if (logId) {
+            await conn.query(
+                `UPDATE email_logs SET status = 'processed', error_message = ? WHERE id = ?`,
+                [`Held for domain approval (domain: ${domain})`, logId]
+            );
+        }
+
+        // Notify all superadmins (non-blocking, after commit)
+        // We schedule this as a post-commit side effect
+        const notifPayload = { domain, senderEmail, senderName, subject: rawSubject, approvalRequestId };
+        setTimeout(async () => {
+            try {
+                const [superadmins] = await pool.query(
+                    `SELECT id, name FROM users WHERE role = 'superadmin' AND is_active = 1`
+                );
+                for (const admin of superadmins) {
+                    await createNotification(pool, {
+                        user_id: admin.id,
+                        type: 'domain_approval',
+                        title: `🔒 New Domain Approval: ${notifPayload.domain}`,
+                        body: `Email from ${notifPayload.senderEmail} (${notifPayload.subject?.slice(0, 100)}). Requires domain approval.`,
+                        entity_id: notifPayload.approvalRequestId
+                    });
+                }
+                // WebSocket broadcast
+                try {
+                    const { broadcast } = await import('./socketService.js');
+                    broadcast('domain_approval_needed', {
+                        domain: notifPayload.domain,
+                        sender_email: notifPayload.senderEmail,
+                        approval_request_id: notifPayload.approvalRequestId
+                    });
+                } catch (_) {}
+            } catch (notifErr) {
+                logger.error(`[EmailPoller] Superadmin notification failed (non-fatal): ${notifErr.message}`);
+            }
+        }, 500);
+
+    } catch (holdErr) {
+        logger.error(`[EmailPoller] Failed to create approval request for domain '${domain}': ${holdErr.message}`);
+        // Don't throw — let the email be marked as seen so we don't retry endlessly
+    }
+
+    return null; // Signal: do NOT create ticket
 }
 
 async function processOneEmail(pool, msg, connection, defaultProjectId, defaultPriority, systemUserId) {
@@ -316,6 +577,13 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
              VALUES (?, 'customer', ?, ?, ?, ?, ?)`,
             [conversationId, senderName, bodyText, messageId, inReplyTo, references.join(' ')]
         );
+
+        const internalMsgId = msgResult.insertId;
+
+        // 2.5 Save Attachments if any
+        if (parsed.attachments && parsed.attachments.length > 0) {
+            await saveEmailAttachments(conn, internalMsgId, parsed.attachments);
+        }
 
         // 3. Map Participants (relational)
         const uniqueParticipants = [...new Set(filterParticipants(visibleParticipants, senderEmail))];
@@ -530,48 +798,65 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             return;
         }
 
-        // Create New Ticket
+        // Create New Ticket — Domain-Based Customer Resolution
         logger.info(`[EmailPoller] Match result: reason=new_ticket messageId=${messageId} inReplyTo=${inReplyTo || ''}`);
-        logger.info(`[EmailPoller] No thread match for ${messageId}. Creating new ticket from sender=${senderEmail}, subject="${rawSubject.slice(0, 120)}"`);
-        let [customers] = await conn.query('SELECT id FROM customers WHERE email = ? LIMIT 1', [senderEmail]);
-        let customerId;
-        if (customers.length) {
-            customerId = customers[0].id;
-        } else {
-            const [res] = await conn.query('INSERT INTO customers (name, email) VALUES (?, ?)', [senderName, senderEmail]);
-            customerId = res.insertId;
+        logger.info(`[EmailPoller] No thread match for ${messageId}. Resolving customer by domain for sender=${senderEmail}, subject="${rawSubject.slice(0, 120)}"`);
+
+        const domainResolution = await resolveCustomerByDomain(conn, pool, senderEmail, senderName, rawSubject, bodyText, messageId, inReplyTo, references, logId);
+
+        if (!domainResolution) {
+            // Unknown domain — email has been held for superadmin approval. Commit and exit.
+            await conn.commit();
+            logger.info(`[EmailPoller] ⏸️ Email held for domain approval: ${senderEmail} (messageId=${messageId})`);
+            return;
         }
 
-        const today = moment().tz(TZ).format('YYYYMMDD');
-        const lockName = `ticket_seq_${today}`;
-        await conn.query(`SELECT GET_LOCK(?, 5)`, [lockName]);
-        let ticketNumber;
-        try {
-            const [countRow] = await conn.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at) = CURDATE()`);
-            const seq = String(countRow[0].cnt + 1).padStart(4, '0');
-            ticketNumber = `TKT-${today}-${seq}`;
-        } finally {
-            await conn.query(`SELECT RELEASE_LOCK(?)`, [lockName]);
+        const { customerId, customerName: resolvedCustomerName, matchType: domainMatchType } = domainResolution;
+        let { projectId: resolvedProjectId } = domainResolution;
+
+        logger.info(`[EmailPoller] Domain resolved: type=${domainMatchType} customer=${customerId} project=${resolvedProjectId}`);
+
+        // Safety verification: Ensure the project_id exists before inserting, as DB wipes can cause foreign key failures
+        if (resolvedProjectId) {
+            const [pCheck] = await pool.query('SELECT id FROM projects WHERE id = ?', [resolvedProjectId]);
+            if (!pCheck.length) resolvedProjectId = null;
         }
 
-        const nowStr = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
+        // 5. Create Ticket (Relational SLA 2.1)
+        const { SlaCalculator } = await import('./sla/calculator.js');
         let finalPriority = defaultPriority;
-        const emergencyKeywords = ['server down', 'emergency', 'outage', 'critical', 'urgent', 'crashed'];
-        if (emergencyKeywords.some(kw => rawSubject.toLowerCase().includes(kw) || bodyText.toLowerCase().includes(kw))) finalPriority = 'P1';
+        
+        // Dynamic Resolution: Try exact name, then partial name, then global fallback
+        const [prioRows] = await pool.query(
+            `SELECT id, name FROM priorities WHERE name = ? OR name LIKE ? ORDER BY is_active DESC, level ASC LIMIT 1`, 
+            [finalPriority, `%${finalPriority}%`]
+        );
+        const priorityId = prioRows[0]?.id || 2; // Fallback to Q1 (id 2)
+        const priorityName = prioRows[0]?.name || 'Q1';
 
-        const [policies] = await conn.query('SELECT resolution_time_hours FROM sla_policies WHERE priority = ?', [finalPriority]);
-        const etr = moment().tz(TZ).add(policies[0]?.resolution_time_hours || 2, 'hours').format('YYYY-MM-DD HH:mm:ss');
-        let finalAssigneeId = null;
-        try {
-            finalAssigneeId = await getShiftAssignee(finalPriority);
-        } catch (assignErr) {
-            logger.error(`[EmailPoller] Auto-assignment failed (non-fatal): ${assignErr.message}`);
-        }
+        const resolvedTz = await resolveTicketTimezone(pool, { customerId, projectId: resolvedProjectId });
+        const slaPolicy = await resolveSlaPolicy(pool, { customerId, projectId: resolvedProjectId, priorityId });
+        const calendar = await getSlaCalendar(pool);
+        const calculator = new SlaCalculator(pool);
+        
+        const nowStr = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
+        const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendar);
+        const etr = etrMoment.format('YYYY-MM-DD HH:mm:ss');
 
-        const [tResult] = await conn.query(
-            `INSERT INTO tickets (ticket_number, subject, customer_id, project_id, category, priority, description, status, escalation_level, sla_state, str, etr, created_by, assigned_to, source)
-             VALUES (?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, ?, 'email')`,
-            [ticketNumber, rawSubject.slice(0, 500), customerId, defaultProjectId, cleanSubject.slice(0, 250), finalPriority, description, nowStr, etr, systemUserId, finalAssigneeId]
+        const ticketNumber = await generateTicketNumber(pool, priorityId);
+        
+        const [tResult] = await pool.query(
+            `INSERT INTO tickets (
+                ticket_number, subject, customer_id, project_id, queue_id, category, priority, priority_id, description, 
+                status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, assignment_source,
+                resolved_timezone, sla_policy_id, sla_version
+            )
+            VALUES (?,?,?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, NULL, 'email', 'auto', ?, ?, ?)`,
+            [
+                ticketNumber, rawSubject.slice(0, 500), customerId, resolvedProjectId, null, cleanSubject.slice(0, 250), 
+                priorityName, priorityId, description, nowStr, etr, systemUserId,
+                resolvedTz, slaPolicy.id, slaPolicy.version
+            ]
         );
         const ticketId = tResult.insertId;
 
@@ -586,6 +871,12 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
              VALUES (?, 'customer', ?, ?, ?, ?)`,
             [conversationId, senderName, bodyText, messageId, references.join(' ')]
         );
+        const internalMsgId = msgResult.insertId;
+
+        // 5.5 Save Attachments if any
+        if (parsed.attachments && parsed.attachments.length > 0) {
+            await saveEmailAttachments(conn, internalMsgId, parsed.attachments);
+        }
 
         // Add Participants (To + CC + BCC)
         await conn.query(`INSERT INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'to')`, [conversationId, senderEmail]);
@@ -593,7 +884,6 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         const uniqueParticipants = [...new Set(filterParticipants(visibleParticipants, senderEmail))];
         for (const email of uniqueParticipants) {
             const normalized = email.toLowerCase().trim();
-            // Even for new tickets, check if they were EVER removed from this conversation (unlikely but safe)
             const [removals] = await conn.query(
                 "SELECT id FROM conversation_participant_removals WHERE conversation_id = ? AND email = ? LIMIT 1",
                 [conversationId, normalized]
@@ -610,65 +900,31 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
         await conn.commit();
 
-        // Mark as processed IMMEDIATELY after commit — before external calls that may fail
-        if (logId) await conn.query(`UPDATE email_logs SET status='processed' WHERE id=?`, [logId]);
-        logger.info(`[EmailPoller] 🆕 Created ticket ${ticketNumber}`);
+        // Step 6: Trigger the 8-Step Enterprise Pipeline
+        const { workflowEvents } = await import('../modules/workflows/workflowEngine.js');
+        workflowEvents.emit('ticket_created', {
+            ticketId,
+            payload: { 
+                customer_id: customerId, 
+                project_id: resolvedProjectId, 
+                category: cleanSubject.slice(0, 250), 
+                priority: finalPriority, 
+                status: 'open', 
+                source: 'email' 
+            }
+        });
 
-        // 6. Real-time Broadcasts (Ticket + Initial Message)
+        // Mark as processed in email logs
+        if (logId) await conn.query(`UPDATE email_logs SET status='processed' WHERE id=?`, [logId]);
+        logger.info(`[EmailPoller] 🆕 Ingested ticket ${ticketNumber}. Handed off to Enterprise Pipeline.`);
+
+        // Real-time broadcasts for UI (Optional: can also be moved to workflow engine)
         try {
             if (!isAutomated) {
                 const { broadcast } = await import('./socketService.js');
-                
-                // Broadcast the new ticket itself
-                broadcast('new_ticket', {
-                    id: ticketId,
-                    ticket_number: ticketNumber,
-                    category: cleanSubject.slice(0, 250),
-                    priority: finalPriority,
-                    status: 'open',
-                    customer_name: customers[0]?.name || senderName,
-                    created_at: nowStr
-                });
-
-                // Broadcast the initial message
-                broadcast('new_message', {
-                    id: msgResult.insertId,
-                    ticket_id: ticketId,
-                    conversation_id: conversationId,
-                    sender_type: 'customer',
-                    sender_name: senderName,
-                    message_body: bodyText,
-                    created_at: nowStr
-                });
-            }
-        } catch (sErr) {
-            logger.error(`[EmailPoller] Socket broadcast failed for new ticket: ${sErr.message}`);
-        }
-
-        // Notifications (ONLY if NOT automated) — all wrapped in try/catch since DB is already committed
-        const ticketObj = { id: ticketId, ticket_number: ticketNumber, category: cleanSubject.slice(0, 250), priority: finalPriority, description: description, etr: etr };
-        try {
-            if (!isAutomated) {
-                sendTicketNotification(ticketObj, senderEmail, messageId)
-                    .catch(err => logger.error(`[EmailPoller] Async initial acknowledgement failed: ${err.message}`));
-            } else {
-                logger.info(`[EmailPoller] Suppressing initial acknowledgement for automated new ticket ${ticketNumber}`);
+                broadcast('new_ticket', { id: ticketId, ticket_number: ticketNumber, status: 'open', created_at: nowStr });
             }
         } catch (_) {}
-        if (finalPriority === 'P1') try { await sendEmergencyBroadcast({ id: ticketId, ...ticketObj }); } catch (_) {}
-        if (finalAssigneeId) {
-            try {
-                await createNotification(pool, {
-                    user_id: finalAssigneeId,
-                    type: 'ticket_assigned',
-                    title: `Auto-Assigned: ${ticketNumber}`,
-                    body: `You have been auto-assigned a new email ticket: ${cleanSubject}`,
-                    entity_id: ticketId
-                });
-            } catch (notifErr) {
-                logger.error(`[EmailPoller] In-app notification failed (non-fatal): ${notifErr.message}`);
-            }
-        }
 
     } catch (err) {
         // Safe rollback — conn itself might be broken (e.g. DB disconnected)

@@ -3,6 +3,7 @@ import nodemailer from 'nodemailer';
 import { logger } from '../../logger.js';
 import connectDB from '../../db/index.js';
 import { getConversationTrailHtml } from '../conversations/adapters/emailAdapter.js';
+import { resolveSlaPolicy } from '../sla/slaPolicyService.js';
 
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -76,6 +77,7 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
 
     let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
     let trailHtml = '';
+    let responseTimeSec = 900; // default 15 minutes
     try {
         if (rootMessageId) {
             // If explicit root message provided, reply directly to it
@@ -89,9 +91,36 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
             headers = await buildThreadHeaders(pool, ticket.id);
         }
         if (ticket.id) trailHtml = await getConversationTrailHtml(pool, ticket.id);
+
+        if (ticket.priority) {
+            // Priority is a name like "Critical", we need to find its ID for resolution
+            const [prioRows] = await pool.query(`SELECT id FROM priorities WHERE name = ?`, [ticket.priority]);
+            if (prioRows.length) {
+                const policy = await resolveSlaPolicy(pool, { 
+                    customerId: ticket.customer_id, 
+                    projectId: ticket.project_id, 
+                    priorityId: prioRows[0].id 
+                });
+                if (policy?.first_response_hrs) {
+                    responseTimeSec = policy.first_response_hrs * 3600;
+                }
+            }
+        }
     } catch (trailErr) {
         logger.error(`[EmailService] Trail/header build failed for ticket ${ticket.ticket_number}: ${trailErr.message}`);
     }
+
+    // Format response time as human-readable string
+    const formatResponseTime = (sec) => {
+        if (sec < 60) return `${sec} second(s)`;
+        if (sec < 3600) {
+            const mins = Math.round(sec / 60);
+            return `${mins} minute(s)`;
+        }
+        const hrs = (sec / 3600).toFixed(1).replace(/\.0$/, '');
+        return `${hrs} hour(s)`;
+    };
+    const responseTimeLabel = formatResponseTime(responseTimeSec);
 
     const mailOptions = {
         from: `"Support Team" <${process.env.EMAIL_USER}>`,
@@ -114,6 +143,7 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b; width:40%"><strong>Ticket Number</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Category</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.category}</td></tr>
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Priority</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.priority}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>First Response Target</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${responseTimeLabel}</td></tr>
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>ETR (Deadline)</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.etr}</td></tr>
           <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b; vertical-align:top"><strong>Description</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee; white-space: pre-wrap;">${formattedDescription}</td></tr>
         </table>

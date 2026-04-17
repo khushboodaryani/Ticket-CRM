@@ -109,6 +109,7 @@ export default function TicketDetail() {
     const [queueId, setQueueId] = useState('')
     const [assignUsers, setAssignUsers] = useState([])
     const [queues, setQueues] = useState([])
+    const [priorities, setPriorities] = useState([])
 
     // Conversation
     const [messageBody, setMessageBody] = useState('')
@@ -117,6 +118,10 @@ export default function TicketDetail() {
 
     // Tasks
     const [taskTitle, setTaskTitle] = useState('')
+
+    // Attachments
+    const [selectedFiles, setSelectedFiles] = useState([])
+    const fileInputRef = useRef(null)
 
     // Modals
     const [escalateReason, setEscalateReason] = useState('')
@@ -127,11 +132,12 @@ export default function TicketDetail() {
 
     const loadData = useCallback(async () => {
         try {
-            const [ticketRes, convRes, userRes, queueRes] = await Promise.all([
+            const [ticketRes, convRes, userRes, queueRes, prioRes] = await Promise.all([
                 api.get(`/tickets/${id}`),
                 api.get(`/tickets/${id}/conversation`),
                 api.get('/users'),
-                api.get('/queues')
+                api.get('/queues'),
+                api.get('/sla/priorities')
             ])
             setTicket(ticketRes.data.ticket)
             setLogs(ticketRes.data.escalation_logs)
@@ -144,6 +150,7 @@ export default function TicketDetail() {
             setMessages(convRes.data.messages || [])
             setAssignUsers(userRes.data.users)
             setQueues(queueRes.data.queues)
+            setPriorities(prioRes.data.priorities || [])
             setLoading(false)
         } catch (err) {
             console.error(err)
@@ -180,17 +187,46 @@ export default function TicketDetail() {
 
     const handleSendMessage = async (e) => {
         e.preventDefault()
-        if (!messageBody.trim() || sending) return
+        if ((!messageBody.trim() && selectedFiles.length === 0) || sending) return
         setSending(true)
         try {
-            await api.post(`/tickets/${id}/conversation/messages`, {
-                message_body: messageBody,
-                is_internal_note: isInternal
-            })
+            const formData = new FormData();
+            formData.append('message_body', messageBody);
+            formData.append('is_internal_note', isInternal ? '1' : '0');
+            
+            selectedFiles.forEach(file => {
+                formData.append('attachments', file);
+            });
+
+            await api.post(`/tickets/${id}/conversation/messages`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+
             setMessageBody('')
+            setSelectedFiles([])
+            if (fileInputRef.current) fileInputRef.current.value = ''
             loadData()
         } catch { toast.error('Failed to send message') }
         setSending(false)
+    }
+
+    const handleDownload = async (attachmentId, originalName) => {
+        const downloadToast = toast.loading(`Downloading ${originalName}...`);
+        try {
+            const response = await api.get(`/tickets/${id}/attachments/${attachmentId}`, {
+                responseType: 'blob'
+            });
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', originalName);
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            toast.success('Download complete', { id: downloadToast });
+        } catch (err) {
+            toast.error('Download failed', { id: downloadToast });
+        }
     }
 
     const handleAddTask = async (e) => {
@@ -424,6 +460,27 @@ export default function TicketDetail() {
                                                     boxShadow: '0 1px 3px rgba(0,0,0,0.07)'
                                                 }}>
                                                     {formatConversationBody(m)}
+
+                                                    {/* Render Attachments */}
+                                                    {m.attachments && m.attachments.length > 0 && (
+                                                        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6, borderTop: `1px solid ${onRight ? 'rgba(255,255,255,0.2)' : 'var(--border)'}`, paddingTop: 8 }}>
+                                                            {m.attachments.map(att => (
+                                                                <div 
+                                                                    key={att.id} 
+                                                                    onClick={() => handleDownload(att.id, att.original_name)}
+                                                                    style={{ 
+                                                                        display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer',
+                                                                        padding: '4px 8px', borderRadius: 6, background: onRight ? 'rgba(255,255,255,0.1)' : 'var(--bg-input)',
+                                                                        border: `1px solid ${onRight ? 'rgba(255,255,255,0.2)' : 'var(--border)'}`
+                                                                    }}
+                                                                >
+                                                                    <span>📎</span>
+                                                                    <span style={{ flex: 1, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{att.original_name}</span>
+                                                                    <span style={{ fontSize: 10, opacity: 0.7 }}>({(att.file_size / 1024).toFixed(1)} KB)</span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         )
@@ -442,21 +499,46 @@ export default function TicketDetail() {
                                     <form onSubmit={handleSendMessage} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                                         <textarea
                                             className="input"
-                                            placeholder={isInternal ? "✏️ Write an internal note (only visible to agents)…" : (ticket.source === 'email' ? "� Write an email reply to the customer…" : "�💬 Write a reply to the customer…")}
+                                            placeholder={isInternal ? "✏️ Write an internal note (only visible to agents)…" : (ticket.source === 'email' ? "📧 Write an email reply to the customer…" : "💬 Write a reply to the customer…")}
                                             rows={3}
-                                            style={{ resize: 'none', fontSize: 13, border: isInternal ? '1.5px solid #f59e0b' : undefined }}
+                                            style={{ resize: 'none', fontSize: 13, border: isInternal ? '1.5px solid #f59e0b' : undefined, background: isInternal ? '#fffbeb' : undefined }}
                                             value={messageBody}
                                             onChange={e => setMessageBody(e.target.value)}
                                             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); } }}
                                         />
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', color: isInternal ? '#f59e0b' : 'var(--text-secondary)', fontWeight: 600 }}>
-                                                <input type="checkbox" checked={isInternal} onChange={e => setIsInternal(e.target.checked)} />
-                                                🔒 Internal Note
-                                            </label>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 6, background: isInternal ? '#fef3c7' : 'transparent', border: isInternal ? '1px solid #fde68a' : '1px solid transparent', transition: 'all 0.2s' }}>
+                                                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', color: isInternal ? '#b45309' : 'var(--text-secondary)', fontWeight: 600 }}>
+                                                        <input type="checkbox" checked={isInternal} onChange={e => setIsInternal(e.target.checked)} />
+                                                        🔒 Internal Note
+                                                    </label>
+                                                </div>
+                                                
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                    <input 
+                                                        type="file" 
+                                                        id="file-upload" 
+                                                        multiple 
+                                                        style={{ display: 'none' }} 
+                                                        ref={fileInputRef}
+                                                        onChange={(e) => setSelectedFiles(Array.from(e.target.files))}
+                                                    />
+                                                    <label htmlFor="file-upload" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--accent)', fontWeight: 600, padding: '4px 8px', borderRadius: 4, border: '1px solid var(--accent)' }}>
+                                                        📎 Attach
+                                                    </label>
+                                                    {selectedFiles.length > 0 && (
+                                                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{selectedFiles.length} file(s)</span>
+                                                    )}
+                                                </div>
+                                            </div>
+
                                             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                                {ticket.source === 'email' && isInternal && (
+                                                    <span style={{ fontSize: 11, color: '#b45309', fontWeight: 600 }}>⚠️ Private Note (Not Emailed)</span>
+                                                )}
                                                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Shift+Enter for new line</span>
-                                                <button className={isInternal ? "btn btn-sm" : "btn btn-primary btn-sm"} type="submit" disabled={sending || !messageBody.trim()} style={isInternal ? { background: '#f59e0b', color: '#fff', border: 'none' } : {}}>
+                                                <button className={isInternal ? "btn btn-sm" : "btn btn-primary btn-sm"} type="submit" disabled={sending || (!messageBody.trim() && selectedFiles.length === 0)} style={isInternal ? { background: '#f59e0b', color: '#fff', border: 'none' } : {}}>
                                                     {sending ? 'Sending…' : (isInternal ? '📝 Add Note' : (ticket.source === 'email' ? '📧 Send Email' : '➤ Send Reply'))}
                                                 </button>
                                             </div>
@@ -672,18 +754,21 @@ export default function TicketDetail() {
                         <div className="form-group" style={{ marginTop: 16 }}>
                             <label className="form-label">New Priority</label>
                             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
-                                {PRIORITY_OPTIONS.map(p => (
-                                    <button
-                                        key={p} type="button"
-                                        onClick={() => setNewPriority(p)}
-                                        style={{
-                                            padding: '6px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
-                                            border: `2px solid ${newPriority === p ? PRIORITY_COLORS[p] : 'var(--border)'}`,
-                                            background: newPriority === p ? `${PRIORITY_COLORS[p]}15` : 'var(--bg-input)',
-                                            color: newPriority === p ? PRIORITY_COLORS[p] : 'var(--text-secondary)'
-                                        }}
-                                    >{p}</button>
-                                ))}
+                                {priorities.map(p => {
+                                    const pColor = PRIORITY_COLORS[p.name] || 'var(--accent)';
+                                    return (
+                                        <button
+                                            key={p.id} type="button"
+                                            onClick={() => setNewPriority(p.name)}
+                                            style={{
+                                                padding: '6px 14px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                                                border: `2px solid ${newPriority === p.name ? pColor : 'var(--border)'}`,
+                                                background: newPriority === p.name ? `${pColor}15` : 'var(--bg-input)',
+                                                color: newPriority === p.name ? pColor : 'var(--text-secondary)'
+                                            }}
+                                        >{p.name}</button>
+                                    )
+                                })}
                             </div>
                         </div>
                         <div className="form-group" style={{ marginTop: 12 }}>

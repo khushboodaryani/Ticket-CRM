@@ -11,12 +11,16 @@ const DEFAULT_CATEGORIES = [
     'Account', 'Network', 'Hardware', 'Software', 'Access'
 ]
 
-const PRIORITY_INFO = {
-    P1: { label: 'P1 – Critical', color: '#ef4444', sla: 'Escalates in 30 min' },
-    P2: { label: 'P2 – High', color: '#f97316', sla: 'Escalates in 1 hour' },
-    P3: { label: 'P3 – Medium', color: '#f59e0b', sla: 'Escalates in 2 hours' },
-    P4: { label: 'P4 – Low', color: '#22c55e', sla: 'Escalates in 4 hours' },
-    P5: { label: 'P5 – Very Low', color: '#6b7280', sla: 'Escalates in 8 hours' },
+const getPriorityColor = (p, priorities = []) => {
+    const found = priorities.find(x => x.name === p)
+    return found?.color_code || '#64748b'
+}
+
+const formatResponseSec = (sec) => {
+    if (!sec || sec <= 0) return '—'
+    if (sec < 60) return `${sec} sec`
+    if (sec < 3600) return `${Math.round(sec / 60)} min`
+    return `${(sec / 3600).toFixed(1).replace(/\.0$/, '')} hr`
 }
 
 const ICON_MAIL = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>
@@ -42,10 +46,9 @@ export default function TicketForm() {
     const [customers, setCustomers] = useState([])
     const [projects, setProjects] = useState([])
     const [users, setUsers] = useState([])
-    const [queues, setQueues] = useState([])
-    const [loading, setLoading] = useState(false)
+    const [priorities, setPriorities] = useState([])
     const [form, setForm] = useState({
-        customer_id: '', project_id: '', category: '', priority: 'P3',
+        customer_id: '', project_id: '', category: '', priority: '',
         description: '', source: 'manual', assigned_to: '', queue_id: ''
     })
     const [categories, setCategories] = useState(() => {
@@ -61,12 +64,19 @@ export default function TicketForm() {
         api.get('/users', { params: { role: 'agent' } }).then(r => setUsers(r.data.users))
         api.get('/queues').then(r => setQueues(r.data.queues || []))
         api.get('/sla').then(r => setSlaPolicies(r.data.policies || []))
+        api.get('/sla/priorities').then(r => {
+            const prios = r.data.priorities || []
+            setPriorities(prios)
+            if (prios.length > 0) set('priority', prios[0].name)
+        })
     }, [])
 
     useEffect(() => {
         if (form.customer_id) {
             api.get('/projects', { params: { customer_id: form.customer_id } }).then(r => setProjects(r.data.projects))
-        } else { setProjects([]) }
+        } else {
+            setProjects([])
+        }
     }, [form.customer_id])
 
     const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
@@ -87,9 +97,11 @@ export default function TicketForm() {
         setLoading(false)
     }
 
-    const pInfo = PRIORITY_INFO[form.priority]
+    const pColor = getPriorityColor(form.priority)
     const pPolicy = slaPolicies.find(p => p.priority === form.priority)
-    const slaDetail = pPolicy ? `Escalates in ${pPolicy.escalation_1_min} min` : pInfo.sla
+    const slaDetail = pPolicy
+        ? `Response ${formatResponseSec(pPolicy.response_time_sec)} · Escalates in ${pPolicy.escalation_1_min} min`
+        : `No SLA policy configured`
 
     return (
         <>
@@ -197,9 +209,9 @@ export default function TicketForm() {
                             <div className="form-group">
                                 <label className="form-label">Priority <span>*</span></label>
                                 <select className="input" value={form.priority} onChange={e => set('priority', e.target.value)} required>
-                                    {Object.entries(PRIORITY_INFO).map(([v, p]) =>
-                                        <option key={v} value={v}>{p.label}</option>
-                                    )}
+                                    {priorities.map(p => (
+                                        <option key={p.name} value={p.name}>{p.name}</option>
+                                    ))}
                                 </select>
                             </div>
                         </div>
@@ -208,14 +220,20 @@ export default function TicketForm() {
                         <div style={{
                             display: 'flex', alignItems: 'center', gap: 14,
                             background: 'var(--bg-input)', borderRadius: 10,
-                            padding: '12px 16px', border: `1px solid ${pInfo.color}30`
+                            padding: '12px 16px', border: `1px solid ${getPriorityColor(form.priority, priorities)}30`
                         }}>
                             <div style={{
                                 width: 10, height: 10, borderRadius: '50%',
-                                background: pInfo.color, flexShrink: 0,
-                                boxShadow: `0 0 8px ${pInfo.color}60`
+                                background: getPriorityColor(form.priority, priorities), flexShrink: 0,
+                                boxShadow: `0 0 8px ${getPriorityColor(form.priority, priorities)}60`
                             }} />
-                            <span className={`priority-badge p${form.priority[1]}-badge`}>{form.priority}</span>
+                            <span style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 6,
+                                padding: '3px 10px', borderRadius: 6, fontSize: 12, fontWeight: 700,
+                                background: `${getPriorityColor(form.priority, priorities)}20`, 
+                                color: getPriorityColor(form.priority, priorities), 
+                                border: `1px solid ${getPriorityColor(form.priority, priorities)}40`
+                            }}>{form.priority}</span>
                             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                                 SLA: <strong>{slaDetail}</strong> · Agent → TL → Manager → GM
                             </span>

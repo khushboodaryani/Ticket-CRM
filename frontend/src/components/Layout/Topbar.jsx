@@ -115,7 +115,7 @@ export default function Topbar({ title, subtitle, actions }) {
 
             <div style={{ flex: 1 }}>
                 <h1 className="topbar-title">{title}</h1>
-                {subtitle && <p className="topbar-sub">{subtitle}</p>}
+                {subtitle && <div className="topbar-sub">{subtitle}</div>}
             </div>
 
             <div className="topbar-actions">

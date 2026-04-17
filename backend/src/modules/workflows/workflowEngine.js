@@ -13,127 +13,207 @@ export const workflowEvents = new WorkflowEventEmitter();
 export const initWorkflowEngine = () => {
     logger.info("⚙️ Workflow Engine Initialized.");
 
-    // Supported Triggers
-    const triggers = ['ticket_created', 'ticket_updated', 'status_changed', 'sla_breached'];
+    workflowEvents.on('ticket_created', async (data) => {
+        try {
+            // 8-Step Enterprise Ingestion Pipeline
+            await processEnterpriseWorkflow('ticket_created', data);
+        } catch (err) {
+            logger.error(`❌ Workflow Engine Error:`, err.message);
+        }
+    });
 
-    triggers.forEach(trigger => {
-        workflowEvents.on(trigger, async (data) => {
-            try {
-                // 1. Core Workflow Processing (Business Rules)
-                await processWorkflows(trigger, data);
-
-                // 2. Automated Communication Hooks
-                if (trigger === 'status_changed') {
-                    await handleStatusChangeNotification(data);
-                } else if (trigger === 'ticket_created') {
-                    await handleTicketCreatedNotification(data);
-                }
-            } catch (err) {
-                logger.error(`❌ Workflow execution error [${trigger}]:`, err.message);
-            }
-        });
+    workflowEvents.on('status_changed', async (data) => {
+        try {
+            await handleStatusChangeNotification(data);
+        } catch (err) {
+            logger.error(`❌ Status Change Notification Error:`, err.message);
+        }
     });
 };
 
 /**
- * Handle sending acknowledgement emails for new tickets
+ * 8-Step Enterprise Pipeline Orchestrator
  */
-async function handleTicketCreatedNotification({ ticketId }) {
-    const pool = connectDB();
-    const [rows] = await pool.query(
-        `SELECT t.*, c.email as customer_email 
-         FROM tickets t 
-         LEFT JOIN customers c ON t.customer_id = c.id 
-         WHERE t.id = ?`,
-        [ticketId]
-    );
-
-    const ticket = rows[0];
-    if (ticket && ticket.customer_email) {
-        const { sendTicketNotification } = await import("../notifications/emailService.js");
-        await sendTicketNotification(ticket, ticket.customer_email);
-        logger.info(`📧 Acknowledgement email sent to ${ticket.customer_email} for new ticket ${ticket.ticket_number}`);
-    }
-}
-
-/**
- * Handle sending status change emails to customers
- */
-async function handleStatusChangeNotification({ ticketId, payload }) {
-    const pool = connectDB();
-    const [rows] = await pool.query(
-        `SELECT t.*, c.email as customer_email 
-         FROM tickets t 
-         LEFT JOIN customers c ON t.customer_id = c.id 
-         WHERE t.id = ?`,
-        [ticketId]
-    );
-
-    const ticket = rows[0];
-    if (ticket && ticket.customer_email) {
-        const { sendTicketStatusNotification } = await import("../notifications/emailService.js");
-        await sendTicketStatusNotification(
-            ticket, 
-            ticket.customer_email, 
-            payload.old_status, 
-            payload.new_status
-        );
-        logger.info(`📧 Status change email sent to ${ticket.customer_email} for ${ticket.ticket_number}`);
-    }
-}
-
-/**
- * Process all active workflows for a specific trigger
- */
-async function processWorkflows(trigger, data) {
+async function processEnterpriseWorkflow(trigger, data) {
     const pool = connectDB();
     const { ticketId, payload } = data;
+    const lockName = `ticket_workflow_${ticketId}`;
 
-    // 0. EMERGENCY BYPASS: P1 Priority tickets skip all automation to remain Unassigned
-    // for the 1st-Responder Claim broadcast workflow.
-    if (payload?.priority === 'P1') {
-        logger.info(`🚨 Skipping Workflow Rules for P1 Ticket #${ticketId} to preserve Unassigned Crisis pool.`);
-        return;
-    }
+    let conn;
+    try {
+        // Step 3a: Acquire Lock (Prevent Race Conditions)
+        const [lockResult] = await pool.query("SELECT GET_LOCK(?, 10) as locked", [lockName]);
+        if (!lockResult[0].locked) {
+            logger.warn(`[Workflow] Could not acquire lock for ticket ${ticketId}. Skipping.`);
+            return;
+        }
 
-    // 1. Fetch active rules for this trigger
-    const [rules] = await pool.query(
-        "SELECT * FROM workflow_rules WHERE trigger_event = ? AND is_active = 1",
-        [trigger]
-    );
+        // Step 3b: Check Idempotency
+        const [ticketRows] = await pool.query(
+            "SELECT id, workflow_processed, project_id, customer_id, priority, queue_id, assignment_source FROM tickets WHERE id = ?",
+            [ticketId]
+        );
+        const ticket = ticketRows[0];
 
-    for (const rule of rules) {
-        try {
-            // 2. Evaluate Conditions
-            const conditionsMet = evaluateConditions(rule.conditions, payload);
-            
-            if (conditionsMet) {
-                logger.info(`🎯 Workflow Match: "${rule.name}" for Ticket #${ticketId}`);
-                
-                // 3. Execute Actions
-                const results = await executeActions(pool, rule.actions, ticketId);
-                
-                // 4. Log Run
-                await pool.query(
-                    "INSERT INTO workflow_runs (rule_id, ticket_id, status, run_log) VALUES (?,?,?,?)",
-                    [rule.id, ticketId, 'success', JSON.stringify(results)]
-                );
-            } else {
-                // Optional: Log skipped
+        if (!ticket || ticket.workflow_processed) {
+            logger.info(`[Workflow] Ticket ${ticketId} already processed or missing. Standing down.`);
+            await pool.query("SELECT RELEASE_LOCK(?)", [lockName]);
+            return;
+        }
+
+        // Step 3c: Fetch Rules Deterministically
+        const [rules] = await pool.query(
+            "SELECT * FROM workflow_rules WHERE trigger_event = ? AND is_active = 1 ORDER BY priority DESC, id ASC",
+            [trigger]
+        );
+
+        // Step 3d: Pick FIRST MATCH Only
+        let matchedRule = null;
+        for (const rule of rules) {
+            if (evaluateConditions(rule.conditions, payload)) {
+                matchedRule = rule;
+                break; 
             }
-        } catch (err) {
-            logger.error(`❌ Rule "${rule.name}" failed:`, err.message);
-            await pool.query(
+        }
+
+        // Step 4: Transactional Apply
+        conn = await pool.getConnection();
+        await conn.beginTransaction();
+
+        let finalPriority = ticket.priority;
+        let finalQueueId = ticket.queue_id;
+        let finalStatus = 'open';
+        let runLogs = [];
+
+        if (matchedRule) {
+            logger.info(`🎯 Workflow Match: "${matchedRule.name}" for Ticket #${ticketId}`);
+            runLogs.push(`Matched Rule: ${matchedRule.name}`);
+
+            for (const action of matchedRule.actions) {
+                if (action.type === 'route_to_queue') {
+                    finalQueueId = action.value;
+                    runLogs.push(`Routed to Queue: ${finalQueueId}`);
+                } else if (action.type === 'update_priority') {
+                    finalPriority = action.value;
+                    runLogs.push(`Priority Set: ${finalPriority}`);
+                } else if (action.type === 'update_status') {
+                    finalStatus = action.value;
+                }
+            }
+        } else {
+            runLogs.push("No matching rules found.");
+        }
+
+        // Step 4b: Fallback Queue
+        if (!finalQueueId) {
+            const [settings] = await conn.query("SELECT setting_value FROM system_settings WHERE setting_key = 'DEFAULT_QUEUE_ID'");
+            if (settings.length) {
+                finalQueueId = parseInt(settings[0].setting_value, 10);
+                runLogs.push(`Applied Default Queue: ${finalQueueId}`);
+            }
+        }
+
+        // Step 4c: Compute SLA (Enterprise 2.1)
+        const { resolveSlaPolicy, getSlaCalendar, resolveTicketTimezone } = await import("../sla/slaPolicyService.js");
+        const { SlaCalculator } = await import("../../services/sla/calculator.js");
+
+        // Resolve new priority record
+        const [prioRows] = await conn.query(`SELECT id FROM priorities WHERE name = ?`, [finalPriority]);
+        const priorityId = prioRows[0]?.id || ticket.priority_id;
+
+        const slaPolicy = await resolveSlaPolicy(conn, {
+            customerId: ticket.customer_id,
+            projectId: ticket.project_id,
+            priorityId: priorityId
+        });
+
+        const resolvedTz = await resolveTicketTimezone(conn, { 
+            customerId: ticket.customer_id, 
+            projectId: ticket.project_id 
+        });
+
+        const calendar = await getSlaCalendar(conn);
+        const calculator = new SlaCalculator(conn);
+        const etrMoment = calculator.computeDueDate(new Date(), slaPolicy.resolution_hrs, calendar);
+        const finalEtr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
+
+        runLogs.push(`SLA Recalculated: ${finalEtr} (TZ: ${resolvedTz})`);
+
+        // Step 4d: Atomic Save
+        await conn.query(
+            `UPDATE tickets SET 
+                priority_id = ?, 
+                queue_id = ?, 
+                status = ?, 
+                etr = ?, 
+                resolved_timezone = ?,
+                sla_policy_id = ?,
+                sla_version = ?,
+                workflow_processed = 1 
+             WHERE id = ?`,
+            [priorityId, finalQueueId, finalStatus, finalEtr, resolvedTz, slaPolicy.id, slaPolicy.version, ticketId]
+        );
+
+        // Step 4e: Schedule Jobs
+        const { jobManager } = await import("../../services/sla/jobManager.js");
+        await jobManager.scheduleJobs({ id: ticketId, etr: finalEtr, resolved_timezone: resolvedTz }, calendar);
+
+        // Step 4e: Rich Activity Trace (for UI visibility)
+        const traceNote = matchedRule 
+            ? `Automation "${matchedRule.name}" applied. Priority: ${finalPriority}, Queue: ${finalQueueId}, ETR: ${finalEtr}.`
+            : `No automation matched. Initializing with Default Queue (${finalQueueId}) & ETR: ${finalEtr}.`;
+        
+        await conn.query(
+            "INSERT INTO ticket_activities (ticket_id, action, note) VALUES (?, 'automation', ?)",
+            [ticketId, traceNote]
+        );
+
+        if (matchedRule) {
+            await conn.query(
                 "INSERT INTO workflow_runs (rule_id, ticket_id, status, run_log) VALUES (?,?,?,?)",
-                [rule.id, ticketId, 'failed', err.message]
+                [matchedRule.id, ticketId, 'success', JSON.stringify(runLogs)]
             );
         }
+
+        // Step 5: Commit
+        await conn.commit();
+        logger.info(`✅ Enterprise Pipeline complete for Ticket #${ticketId}`);
+
+        // Step 6: Assignment Engine (Lazy)
+        if (ticket.assignment_source === 'auto') {
+            try {
+                const { getShiftAssignee } = await import("../../services/assignmentService.js");
+                const assigneeId = await getShiftAssignee(finalQueueId, finalPriority);
+                if (assigneeId) {
+                    await pool.query("UPDATE tickets SET assigned_to = ? WHERE id = ?", [assigneeId, ticketId]);
+                    await pool.query(
+                        "INSERT INTO ticket_activities (ticket_id, action, note) VALUES (?, 'assigned', ?)",
+                        [ticketId, `Auto-assigned via Enterprise Pipeline (Queue: ${finalQueueId})`]
+                    );
+                    logger.info(`👤 Auto-assigned Ticket #${ticketId} to agent ${assigneeId}`);
+                }
+            } catch (assignErr) {
+                logger.error(`❌ Auto-assignment failed: ${assignErr.message}`);
+            }
+        }
+
+        // Step 7: Notification Engine
+        await handleTicketCreatedNotification({ ticketId });
+
+        // Final Release Lock
+        await pool.query("SELECT RELEASE_LOCK(?)", [lockName]);
+
+    } catch (err) {
+        if (conn) await conn.rollback();
+        logger.error(`❌ Enterprise Pipeline Failed for Ticket #${ticketId}:`, err.message);
+        throw err;
+    } finally {
+        if (conn) conn.release();
     }
 }
 
 /**
  * Evaluate if conditions match the payload
- * Currently support basic key-value matching
  */
 function evaluateConditions(conditions, payload) {
     if (!conditions || Object.keys(conditions).length === 0) return true;
@@ -151,35 +231,51 @@ function evaluateConditions(conditions, payload) {
 }
 
 /**
- * Execute a sequence of actions on a ticket
+ * Handle sending acknowledgement emails for new tickets
+ * Fetches the FINAL state after workflows have finished.
  */
-async function executeActions(pool, actions, ticketId) {
-    const runLogs = [];
-    
-    for (const action of actions) {
-        const { type, value } = action;
-        
-        switch (type) {
-            case 'update_status':
-                await pool.query("UPDATE tickets SET status = ? WHERE id = ?", [value, ticketId]);
-                runLogs.push(`Status updated to ${value}`);
-                break;
-                
-            case 'assign_to':
-                await pool.query("UPDATE tickets SET assigned_to = ? WHERE id = ?", [value, ticketId]);
-                runLogs.push(`Assigned to user ID ${value}`);
-                break;
-                
-            case 'add_internal_note':
-                // We'd need to fetch or create a conversation first
-                // For now, let's just log the intent
-                runLogs.push(`Added internal note: ${value}`);
-                break;
-                
-            default:
-                runLogs.push(`Unknown action type: ${type}`);
-        }
+async function handleTicketCreatedNotification({ ticketId }) {
+    const pool = connectDB();
+    const [rows] = await pool.query(
+        `SELECT t.*, c.email as customer_email 
+         FROM tickets t 
+         LEFT JOIN customers c ON t.customer_id = c.id 
+         WHERE t.id = ?`,
+        [ticketId]
+    );
+
+    const ticket = rows[0];
+    if (ticket && ticket.customer_email) {
+        const { sendTicketNotification } = await import("../notifications/emailService.js");
+        // This now carries the accurate, recalculated ETR!
+        await sendTicketNotification(ticket, ticket.customer_email);
+        logger.info(`📧 FINAL Acknowledgement sent to ${ticket.customer_email} for Ticket ${ticket.ticket_number}`);
     }
+}
+
+/**
+ * Handle sending status update emails for existing tickets
+ */
+async function handleStatusChangeNotification(data) {
+    const { ticketId, payload } = data;
+    const { old_status, new_status } = payload;
     
-    return runLogs;
+    // Ignore internal automation updates that don't change actual user status visibility,
+    // though the controller filter should already catch them.
+    if (!old_status || !new_status || old_status === new_status) return;
+
+    const pool = connectDB();
+    const [rows] = await pool.query(
+        `SELECT t.*, c.email as customer_email 
+         FROM tickets t 
+         LEFT JOIN customers c ON t.customer_id = c.id 
+         WHERE t.id = ?`,
+        [ticketId]
+    );
+
+    const ticket = rows[0];
+    if (ticket && ticket.customer_email) {
+        const { sendTicketStatusNotification } = await import("../notifications/emailService.js");
+        await sendTicketStatusNotification(ticket, ticket.customer_email, old_status, new_status);
+    }
 }

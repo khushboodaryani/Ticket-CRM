@@ -1067,6 +1067,33 @@ textarea.input {
   margin: 4px 0;
 }
 
+/* --- Decision Engine & Monitoring --- */
+.risk-pulse {
+    animation: risk-pulse-anim 2s infinite;
+    position: relative;
+    z-index: 1;
+}
+
+@keyframes risk-pulse-anim {
+    0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+    70% { box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.monitoring-card {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.monitoring-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-xl);
+    filter: brightness(1.02);
+}
+
+.badge-sla-breach { background: #fee2e2; color: #ef4444; border: 1px solid #fca5a5; }
+.badge-sla-warning { background: #fef3c7; color: #d97706; border: 1px solid #fcd34d; }
+.badge-sla-healthy { background: #dcfce7; color: #10b981; border: 1px solid #86efac; }
+
 .timeline-content {
   padding-bottom: 20px;
   flex: 1;
@@ -1451,3 +1478,84 @@ textarea.input {
     justify-content: flex-start;
   }
 }
+
+/* ── Monitoring Suite Helpers ── */
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24px;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 24px;
+}
+
+@media (max-width: 1200px) {
+  .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 768px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+}
+
+/* ── Status Pulse ── */
+.pulse-online {
+  animation: pulse-green 2s infinite;
+}
+
+@keyframes pulse-green {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+/* ── Kanban Styling ── */
+.kanban-col {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.kanban-col::-webkit-scrollbar { width: 4px; }
+.kanban-col::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── Premium Monitoring Polish ── */
+.monitoring-card {
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.monitoring-card:hover {
+  transform: translateY(-4px) scale(1.01);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3), 0 0 15px var(--accent-glow);
+  border-color: var(--accent);
+}
+
+.monitoring-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.03), transparent);
+  transition: 0.5s;
+}
+
+.monitoring-card:hover::after {
+  left: 100%;
+}
+
+.shift-card:hover {
+  transform: scale(1.02);
+  background: var(--bg-card) !important;
+  box-shadow: var(--shadow-lg);
+}
+

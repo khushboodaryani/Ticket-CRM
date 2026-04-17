@@ -15,7 +15,18 @@ export default function Queues() {
     const [editingQueue, setEditingQueue] = useState(null)
     const [selectedQueue, setSelectedQueue] = useState(null)
     const [agentPanel, setAgentPanel] = useState(false)
-    const [form, setForm] = useState({ name: '', priority: 3, sla_hours: 24, description: '' })
+    const [form, setForm] = useState({ 
+        name: '', 
+        priority: 3, 
+        sla_hours: 24, 
+        description: '', 
+        type: 'pull',
+        modifier: {
+            response_multiplier: 1.0,
+            escalation_multiplier: 1.0,
+            stricter_only: true
+        }
+    })
     const [selectedAgents, setSelectedAgents] = useState([])
 
     const fetchQueues = useCallback(async () => {
@@ -38,13 +49,35 @@ export default function Queues() {
 
     const openCreate = () => {
         setEditingQueue(null)
-        setForm({ name: '', priority: 3, sla_hours: 24, description: '' })
+        setForm({ 
+            name: '', 
+            priority: 3, 
+            sla_hours: 24, 
+            description: '', 
+            type: 'pull',
+            modifier: {
+                response_multiplier: 1.0,
+                escalation_multiplier: 1.0,
+                stricter_only: true
+            }
+        })
         setShowForm(true)
     }
 
     const openEdit = (q) => {
         setEditingQueue(q)
-        setForm({ name: q.name, priority: q.priority, sla_hours: q.sla_hours, description: q.description || '' })
+        setForm({ 
+            name: q.name, 
+            priority: q.priority, 
+            sla_hours: q.sla_hours, 
+            description: q.description || '',
+            type: q.type || 'pull',
+            modifier: {
+                response_multiplier: q.response_multiplier || 1.0,
+                escalation_multiplier: q.escalation_multiplier || 1.0,
+                stricter_only: q.stricter_only === 1
+            }
+        })
         setShowForm(true)
     }
 
@@ -149,13 +182,26 @@ export default function Queues() {
                                         <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--text-primary)', marginBottom: 4 }}>{q.name}</div>
                                         <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5, minHeight: 40 }}>{q.description || 'No description provided'}</p>
                                     </div>
-                                    <span style={{
-                                        padding: '4px 12px', borderRadius: 12, fontSize: 11, fontWeight: 700,
-                                        background: PRIORITY_COLORS[q.priority] + '15',
-                                        color: PRIORITY_COLORS[q.priority],
-                                        border: `1px solid ${PRIORITY_COLORS[q.priority]}30`
-                                    }}>{PRIORITY_LABELS[q.priority]}</span>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <span style={{
+                                            padding: '4px 10px', borderRadius: 10, fontSize: 10, fontWeight: 700,
+                                            background: 'var(--accent-subtle)', color: 'var(--accent)',
+                                            border: '1px solid var(--accent-border)'
+                                        }}>{q.type?.toUpperCase() || 'PULL'}</span>
+                                        <span style={{
+                                            padding: '4px 12px', borderRadius: 12, fontSize: 11, fontWeight: 700,
+                                            background: PRIORITY_COLORS[q.priority] + '15',
+                                            color: PRIORITY_COLORS[q.priority],
+                                            border: `1px solid ${PRIORITY_COLORS[q.priority]}30`
+                                        }}>{PRIORITY_LABELS[q.priority]}</span>
+                                    </div>
                                 </div>
+                                {q.response_multiplier !== 1 && (
+                                    <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+                                        SLA Tightened: {((1 - q.response_multiplier) * 100).toFixed(0)}% Booster Active
+                                    </div>
+                                )}
 
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
                                     {[
@@ -212,9 +258,33 @@ export default function Queues() {
                                     </select>
                                 </div>
                                 <div className="form-group">
-                                    <label className="form-label">SLA Window (Hrs)</label>
-                                    <input type="number" className="input" value={form.sla_hours} min={0.5} step={0.5} onChange={e => setForm(p => ({ ...p, sla_hours: parseFloat(e.target.value) }))} style={{ padding: '12px 16px', borderRadius: 12 }} />
+                                    <label className="form-label">Workpool Type</label>
+                                    <select className="input" value={form.type} onChange={e => setForm(p => ({ ...p, type: e.target.value }))} style={{ padding: '12px 16px', borderRadius: 12 }}>
+                                        <option value="pull">Pull Pool (Pick & Claim)</option>
+                                        <option value="push">Push Pool (Auto-Assign)</option>
+                                    </select>
                                 </div>
+                            </div>
+                            <div style={{ background: 'var(--bg-app)', padding: 16, borderRadius: 16, border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>SLA Contract Multipliers</div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                                    <div className="form-group">
+                                        <label className="form-label" style={{ fontSize: 11 }}>Response Multiplier</label>
+                                        <input type="number" className="input small" value={form.modifier.response_multiplier} min={0.1} max={1.0} step={0.05} onChange={e => setForm(p => ({ ...p, modifier: { ...p.modifier, response_multiplier: parseFloat(e.target.value) } }))} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label" style={{ fontSize: 11 }}>Escalation Speed</label>
+                                        <input type="number" className="input small" value={form.modifier.escalation_multiplier} min={0.1} max={1.0} step={0.05} onChange={e => setForm(p => ({ ...p, modifier: { ...p.modifier, escalation_multiplier: parseFloat(e.target.value) } }))} />
+                                    </div>
+                                </div>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 12 }}>
+                                    <input type="checkbox" checked={form.modifier.stricter_only} onChange={e => setForm(p => ({ ...p, modifier: { ...p.modifier, stricter_only: e.target.checked } }))} />
+                                    <span>Only apply if stricter than Priority SLA</span>
+                                </label>
+                            </div>
+                            <div className="form-group">
+                                <label className="form-label">SLA Window (Hrs)</label>
+                                <input type="number" className="input" value={form.sla_hours} min={0.5} step={0.5} onChange={e => setForm(p => ({ ...p, sla_hours: parseFloat(e.target.value) }))} style={{ padding: '12px 16px', borderRadius: 12 }} />
                             </div>
                             <div className="form-group">
                                 <label className="form-label">Workflow Context (Optional)</label>

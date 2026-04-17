@@ -57,23 +57,27 @@ async function runSLAEngine() {
     try {
         const holiday = await isHoliday(pool, todayStr);
 
-        // Fetch SLA Policies
-        const [policies] = await pool.query(`SELECT * FROM sla_policies`);
-        const policyMap = policies.reduce((acc, p) => { acc[p.priority] = p; return acc; }, {});
-
-        const [tickets] = await pool.query(
-            `SELECT t.*, u.reporting_to as manager_id
-       FROM tickets t
-       LEFT JOIN users u ON t.assigned_to = u.id
-       WHERE t.status IN ('open', 'in_progress') AND t.escalation_level < 4`
+        let tickets;
+        const [rows] = await pool.query(
+            `SELECT
+               t.*,
+               u.reporting_to as manager_id,
+               sp.escalation_1_min AS eff_escalation_1_min,
+               sp.escalation_2_min AS eff_escalation_2_min,
+               sp.escalation_3_min AS eff_escalation_3_min
+             FROM tickets t
+             LEFT JOIN users u ON t.assigned_to = u.id
+             LEFT JOIN sla_policies sp ON sp.priority = t.priority
+             WHERE t.status IN ('open', 'in_progress') AND t.escalation_level < 4`
         );
+        tickets = rows;
 
         logger.info(`[SLA Engine] Running check on ${tickets.length} active tickets`);
 
         for (const ticket of tickets) {
             try {
-                const policy = policyMap[ticket.priority];
-                if (!policy) {
+                const hasPolicy = ticket.eff_escalation_1_min || ticket.eff_escalation_2_min || ticket.eff_escalation_3_min;
+                if (!hasPolicy) {
                     logger.warn(`[SLA Engine] No SLA policy for priority ${ticket.priority}`);
                     continue;
                 }
@@ -136,7 +140,7 @@ async function runSLAEngine() {
                 // --- Escalation Check ---
                 const createdAt = moment(ticket.created_at).tz(TZ);
                 const elapsedMinutes = nowMoment.diff(createdAt, "minutes");
-                const threshold = policy[`escalation_${ticket.escalation_level}_min`];
+                const threshold = ticket[`eff_escalation_${ticket.escalation_level}_min`];
 
                 if (!threshold) continue;
 

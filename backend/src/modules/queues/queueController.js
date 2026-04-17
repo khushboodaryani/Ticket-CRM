@@ -7,12 +7,14 @@ export const getQueues = async (req, res) => {
         const pool = connectDB();
         const [rows] = await pool.query(
             `SELECT q.*, u.name as created_by_name,
+              m.response_multiplier, m.escalation_multiplier, m.stricter_only,
               COUNT(DISTINCT qa.user_id) as agent_count,
               COUNT(DISTINCT t.id) as ticket_count
              FROM queues q
              LEFT JOIN users u ON q.created_by = u.id
              LEFT JOIN queue_agents qa ON qa.queue_id = q.id
              LEFT JOIN tickets t ON t.queue_id = q.id AND t.status NOT IN ('resolved','closed')
+             LEFT JOIN queue_sla_modifiers m ON m.queue_id = q.id
              GROUP BY q.id
              ORDER BY q.priority ASC, q.created_at DESC`
         );
@@ -30,15 +32,20 @@ export const getQueueById = async (req, res) => {
         const [rows] = await pool.query(`SELECT * FROM queues WHERE id=?`, [req.params.id]);
         if (!rows.length) return res.status(404).json({ success: false, message: "Queue not found." });
 
+        const [modifier] = await pool.query(`SELECT * FROM queue_sla_modifiers WHERE queue_id=?`, [req.params.id]);
         const [agents] = await pool.query(
-            `SELECT qa.role as queue_role, u.id, u.name, u.email, u.role
-             FROM queue_agents qa
-             JOIN users u ON qa.user_id = u.id
-             WHERE qa.queue_id=?`,
+            `SELECT u.id, u.name, u.email, qa.role as queue_role 
+             FROM queue_agents qa 
+             JOIN users u ON qa.user_id = u.id 
+             WHERE qa.queue_id=?`, 
             [req.params.id]
         );
 
-        return res.json({ success: true, queue: rows[0], agents });
+        return res.json({ 
+            success: true, 
+            queue: { ...rows[0], modifier: modifier[0] || null }, 
+            agents 
+        });
     } catch (err) {
         console.error("getQueueById:", err);
         return res.status(500).json({ success: false, message: "Server error." });
@@ -47,15 +54,24 @@ export const getQueueById = async (req, res) => {
 
 // POST /api/queues
 export const createQueue = async (req, res) => {
-    const { name, priority, sla_hours, description } = req.body;
+    const { name, priority, sla_hours, description, type, modifier } = req.body;
     if (!name) return res.status(400).json({ success: false, message: "Queue name is required." });
     try {
         const pool = connectDB();
         const [result] = await pool.query(
-            `INSERT INTO queues (name, priority, sla_hours, description, created_by) VALUES (?,?,?,?,?)`,
-            [name, priority || 3, sla_hours || 24.00, description || null, req.user.userId]
+            `INSERT INTO queues (name, priority, sla_hours, description, created_by, type) VALUES (?,?,?,?,?,?)`,
+            [name, priority || 3, sla_hours || 24.00, description || null, req.user.userId, type || 'pull']
         );
-        return res.status(201).json({ success: true, message: "Queue created.", queueId: result.insertId });
+        const queueId = result.insertId;
+
+        if (modifier) {
+            await pool.query(
+                `INSERT INTO queue_sla_modifiers (queue_id, response_multiplier, escalation_multiplier, stricter_only) VALUES (?,?,?,?)`,
+                [queueId, modifier.response_multiplier || 1.0, modifier.escalation_multiplier || 1.0, modifier.stricter_only ? 1 : 0]
+            );
+        }
+
+        return res.status(201).json({ success: true, message: "Queue created.", queueId });
     } catch (err) {
         if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ success: false, message: "Queue name already exists." });
         console.error("createQueue:", err);
@@ -65,7 +81,7 @@ export const createQueue = async (req, res) => {
 
 // PUT /api/queues/:id
 export const updateQueue = async (req, res) => {
-    const { name, priority, sla_hours, description } = req.body;
+    const { name, priority, sla_hours, description, type, modifier } = req.body;
     try {
         const pool = connectDB();
         const updates = [], vals = [];
@@ -73,9 +89,22 @@ export const updateQueue = async (req, res) => {
         if (priority !== undefined) { updates.push("priority=?"); vals.push(priority); }
         if (sla_hours !== undefined) { updates.push("sla_hours=?"); vals.push(sla_hours); }
         if (description !== undefined) { updates.push("description=?"); vals.push(description); }
-        if (!updates.length) return res.status(400).json({ success: false, message: "Nothing to update." });
-        vals.push(req.params.id);
-        await pool.query(`UPDATE queues SET ${updates.join(",")} WHERE id=?`, vals);
+        if (type !== undefined) { updates.push("type=?"); vals.push(type); }
+        
+        if (updates.length > 0) {
+            vals.push(req.params.id);
+            await pool.query(`UPDATE queues SET ${updates.join(",")} WHERE id=?`, vals);
+        }
+
+        if (modifier) {
+            await pool.query(
+                `INSERT INTO queue_sla_modifiers (queue_id, response_multiplier, escalation_multiplier, stricter_only) 
+                 VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE 
+                 response_multiplier=VALUES(response_multiplier), escalation_multiplier=VALUES(escalation_multiplier), stricter_only=VALUES(stricter_only)`,
+                [req.params.id, modifier.response_multiplier, modifier.escalation_multiplier, modifier.stricter_only ? 1 : 0]
+            );
+        }
+
         return res.json({ success: true, message: "Queue updated." });
     } catch (err) {
         console.error("updateQueue:", err);
@@ -87,10 +116,19 @@ export const updateQueue = async (req, res) => {
 export const deleteQueue = async (req, res) => {
     try {
         const pool = connectDB();
-        // Unlink tickets from this queue before deleting
+        // Explicit cleanup to avoid FK issues even with CASCADE
+        await pool.query(`DELETE FROM queue_sla_modifiers WHERE queue_id=?`, [req.params.id]);
+        await pool.query(`DELETE FROM queue_agents WHERE queue_id=?`, [req.params.id]);
         await pool.query(`UPDATE tickets SET queue_id=NULL WHERE queue_id=?`, [req.params.id]);
-        await pool.query(`DELETE FROM queues WHERE id=?`, [req.params.id]);
-        return res.json({ success: true, message: "Queue deleted." });
+        await pool.query(`UPDATE customer_domains SET queue_id=NULL WHERE queue_id=?`, [req.params.id]);
+        
+        const [result] = await pool.query(`DELETE FROM queues WHERE id=?`, [req.params.id]);
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: "Queue not found." });
+        }
+        
+        return res.json({ success: true, message: "Queue deleted successfully." });
     } catch (err) {
         console.error("deleteQueue:", err);
         return res.status(500).json({ success: false, message: "Server error." });

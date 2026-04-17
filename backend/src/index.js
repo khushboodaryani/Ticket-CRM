@@ -10,10 +10,10 @@ dotenv.config({ path: './.env' });
 
 import { app } from "./app.js";
 import connectDB from "./db/index.js";
-import { startSLAEngine } from "./modules/sla/slaEngine.js";
+import { startSlaWorker } from "./services/sla/slaWorker.js";
 import { initWorkflowEngine } from "./modules/workflows/workflowEngine.js";
 import { logger } from "./logger.js";
-import { initSocket } from "./services/socketService.js";
+import { initSocket } from "./services/socketServer.js";
 import { startEmailPoller } from "./services/emailPoller.js";
 
 // Verify necessary environment variables
@@ -63,8 +63,8 @@ const startServer = async () => {
         // Initialize Socket.io
         initSocket(server);
 
-        // Start the SLA background engine
-        startSLAEngine();
+        // startSlaWorker(); (Using BullMQ)
+        startSlaWorker();
 
         // Initialize Workflow Engine
         initWorkflowEngine();

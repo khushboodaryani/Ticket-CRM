@@ -5,6 +5,12 @@ import nodemailer from 'nodemailer';
 import { logger } from '../../../logger.js';
 import { logOutgoingEmail } from '../../notifications/emailService.js';
 import connectDB from '../../../db/index.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ATTACHMENT_DIR = path.resolve(__dirname, '../../../../public/attachments');
 
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -133,8 +139,8 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
  * Send agent reply to customer via email
  */
 export const send = async (customerEmail, data) => {
-    if (!customerEmail || !data.message) {
-        logger.warn('[EmailAdapter] Missing customerEmail or message');
+    if (!customerEmail || (!data.message && !data.messageId)) {
+        logger.warn('[EmailAdapter] Missing customerEmail or content');
         return;
     }
 
@@ -230,6 +236,20 @@ export const send = async (customerEmail, data) => {
         const trailHtml = await getConversationTrailHtml(pool, data.ticketId);
         const formattedMessage = data.message.replace(/\n/g, '<br/>');
 
+        // 4.5 Fetch Attachments for Outbound
+        let emailAttachments = [];
+        if (data.messageId) {
+            const [attRows] = await pool.query(
+                `SELECT original_name, storage_path FROM conversation_message_attachments 
+                 WHERE message_id = ? AND is_deleted = 0 AND visibility = 'public'`,
+                [data.messageId]
+            );
+            emailAttachments = attRows.map(att => ({
+                filename: att.original_name,
+                path: path.join(ATTACHMENT_DIR, att.storage_path)
+            }));
+        }
+
         const mailOptions = {
             from: `"Support Team" <${process.env.EMAIL_USER}>`,
             replyTo: REPLY_TO_EMAIL || undefined,
@@ -243,6 +263,7 @@ export const send = async (customerEmail, data) => {
                 'Auto-Submitted': 'auto-generated',
                 'X-Auto-Response-Suppress': 'All'
             },
+            attachments: emailAttachments,
             html: `
                 <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 800px; margin: 0 auto;">
                     <div style="border-bottom: 2px solid #f1f5f9; padding-bottom: 15px; margin-bottom: 20px;">

@@ -27,6 +27,8 @@ const CONDITION_VALUES = {
 const ACTION_TYPES = [
     { value: 'update_status',    label: 'Change Status To' },
     { value: 'assign_to',        label: 'Assign Ticket To User' },
+    { value: 'route_to_queue',     label: 'Route to Queue' },
+    { value: 'update_priority',  label: 'Change Priority To' },
     { value: 'add_internal_note',label: 'Add Internal Note' },
 ]
 
@@ -39,6 +41,8 @@ const emptyForm      = { name: '', trigger_event: 'ticket_created', condition: e
 export default function WorkflowBuilder() {
     const [rules, setRules]         = useState([])
     const [users, setUsers]         = useState([])
+    const [queues, setQueues]       = useState([])
+    const [dbPriorities, setDbPriorities] = useState([])
     const [loading, setLoading]     = useState(true)
     const [showModal, setShowModal] = useState(false)
     const [editRule, setEditRule]   = useState(null)
@@ -50,9 +54,13 @@ export default function WorkflowBuilder() {
         Promise.all([
             api.get('/workflows/rules'),
             api.get('/users'),
-        ]).then(([r, u]) => {
+            api.get('/queues'),
+            api.get('/sla/priorities')
+        ]).then(([r, u, q, p]) => {
             setRules(r.data.rules || [])
             setUsers(u.data.users || [])
+            setQueues(r.data.queues || q.data.queues || [])
+            setDbPriorities(p.data.priorities || [])
         }).catch(() => toast.error('Failed to load data'))
           .finally(() => setLoading(false))
     }
@@ -151,6 +159,11 @@ export default function WorkflowBuilder() {
                 return `Assign → ${u ? u.name : `User #${value}`}`
             }
             if (type === 'update_status') return `Set status → ${value}`
+            if (type === 'update_priority') return `Set priority → ${value}`
+            if (type === 'route_to_queue') {
+                const q = queues.find(q => String(q.id) === String(value))
+                return `Route → ${q ? q.name : `Queue #${value}`}`
+            }
             if (type === 'add_internal_note') return `Add note: "${value}"`
             return `${type}: ${value}`
         } catch { return '—' }
@@ -174,9 +187,23 @@ export default function WorkflowBuilder() {
                         {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
                     </select>
                 )
+            case 'route_to_queue':
+                return (
+                    <select className="input" value={form.action.value} onChange={e => setForm(p => ({ ...p, action: { ...p.action, value: e.target.value } }))}>
+                        <option value="">— Pick a queue —</option>
+                        {queues.map(q => <option key={q.id} value={q.id}>{q.name}</option>)}
+                    </select>
+                )
             case 'add_internal_note':
                 return (
                     <input className="input" placeholder="Note text…" value={form.action.value} onChange={e => setForm(p => ({ ...p, action: { ...p.action, value: e.target.value } }))} />
+                )
+            case 'update_priority':
+                return (
+                    <select className="input" value={form.action.value} onChange={e => setForm(p => ({ ...p, action: { ...p.action, value: e.target.value } }))}>
+                        <option value="">— Pick a priority —</option>
+                        {dbPriorities.map(p => <option key={p.id} value={p.name}>{p.name} ({p.category_name} - {p.prefix} series)</option>)}
+                    </select>
                 )
             default:
                 return null
@@ -323,7 +350,11 @@ export default function WorkflowBuilder() {
                                         {form.condition.field ? (
                                             <select className="input" value={form.condition.value} onChange={e => setForm(p => ({ ...p, condition: { ...p.condition, value: e.target.value } }))}>
                                                 <option value="">— Select value —</option>
-                                                {(CONDITION_VALUES[form.condition.field] || []).map(v => <option key={v} value={v}>{v}</option>)}
+                                                {form.condition.field === 'priority' ? (
+                                                    dbPriorities.map(p => <option key={p.id} value={p.name}>{p.name} ({p.category_name} - {p.prefix} series)</option>)
+                                                ) : (
+                                                    (CONDITION_VALUES[form.condition.field] || []).map(v => <option key={v} value={v}>{v}</option>)
+                                                )}
                                             </select>
                                         ) : (
                                             <input className="input" disabled placeholder="Select a field first" />

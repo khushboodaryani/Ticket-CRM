@@ -1,5 +1,5 @@
 // src/pages/BulkImport.jsx
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
@@ -10,7 +10,7 @@ const CRM_FIELDS = [
     { key: 'customer', label: 'Customer', required: true, hint: 'Customer name or code' },
     { key: 'project', label: 'Project', required: true, hint: 'Project name under that customer' },
     { key: 'category', label: 'Category', required: true, hint: 'Issue type' },
-    { key: 'priority', label: 'Priority', required: true, hint: 'P1–P5 or Critical/High/Medium/Low' },
+    { key: 'priority', label: 'Priority', required: true, hint: 'Priority tier or severity name (e.g., P1, Critical)' },
     { key: 'description', label: 'Description', required: true, hint: 'Full issue description' },
     { key: 'source', label: 'Source', required: false, hint: 'email / call / manual' },
     { key: 'assigned_to', label: 'Assign To', required: false, hint: 'Agent name or email' },
@@ -60,17 +60,7 @@ function parseCSV(text) {
     return { headers, rows }
 }
 
-// ── Priority normaliser (shown in preview) ─────────────────────────────
-const normPriority = (v = '') => {
-    const u = String(v).trim().toUpperCase()
-    if (['P1', 'P2', 'P3', 'P4', 'P5'].includes(u)) return u
-    if (u === 'CRITICAL') return 'P1'
-    if (u === 'HIGH') return 'P2'
-    if (['MEDIUM', 'NORMAL'].includes(u)) return 'P3'
-    if (u === 'LOW') return 'P4'
-    if (['MINIMAL', 'VERY LOW'].includes(u)) return 'P5'
-    return 'P3'
-}
+// Normalizers have been moved inside the component to use dynamic state
 
 const normSource = (v = '') => {
     const s = String(v).toLowerCase().trim()
@@ -100,6 +90,30 @@ export default function BulkImport() {
     const [importing, setImporting] = useState(false)
     const [results, setResults] = useState(null)
     const [dragOver, setDragOver] = useState(false)
+    const [systemPriorities, setSystemPriorities] = useState([])
+
+    useEffect(() => {
+        api.get('/sla/priorities').then(res => setSystemPriorities(res.data.priorities || [])).catch(console.error)
+    }, [])
+
+    const normPriorityDynamic = (v = '') => {
+        const str = String(v).trim().toUpperCase();
+        if (!str) return systemPriorities.find(p => p.name.includes('3'))?.name || systemPriorities[0]?.name || 'P3';
+        
+        const exact = systemPriorities.find(p => p.name.toUpperCase() === str);
+        if (exact) return exact.name;
+        
+        const cat = systemPriorities.find(p => p.category_name.toUpperCase() === str || p.category_name.toUpperCase().includes(str));
+        if (cat) return cat.name;
+
+        if (str.includes('CRIT')) return systemPriorities[0]?.name || 'P1'
+        if (str.includes('HIGH')) return systemPriorities.find(p => p.name.includes('2'))?.name || 'P2'
+        if (str.includes('MED') || str.includes('NORM')) return systemPriorities.find(p => p.name.includes('3'))?.name || 'P3'
+        if (str.includes('LOW')) return systemPriorities.find(p => p.name.includes('4'))?.name || 'P4'
+        if (str.includes('MIN')) return systemPriorities.find(p => p.name.includes('5'))?.name || 'P5'
+        
+        return systemPriorities.find(p => p.name.includes('3'))?.name || systemPriorities[0]?.name || 'P3'
+    }
 
     // ── Step 1: load file ──────────────────────────────────────────────
     const loadFile = (f) => {
@@ -139,8 +153,7 @@ export default function BulkImport() {
             if (!obj.project?.trim()) errors.push('project missing')
             if (!obj.category?.trim()) errors.push('category missing')
             if (!obj.description?.trim()) errors.push('description missing')
-            if (obj.priority) obj.priority = normPriority(obj.priority)
-            else obj.priority = 'P3'
+            obj.priority = normPriorityDynamic(obj.priority)
 
             if (obj.source) obj.source = normSource(obj.source)
             else obj.source = 'manual'
@@ -409,7 +422,7 @@ export default function BulkImport() {
                                                 <td style={{ maxWidth: 120 }}>{r.project || <span style={{ color: 'var(--danger)' }}>—</span>}</td>
                                                 <td>{r.category}</td>
                                                 <td>
-                                                    {r.priority && <span style={{ background: `${PRI_COLORS[r.priority]}15`, color: PRI_COLORS[r.priority], padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{r.priority}</span>}
+                                                    {r.priority && <span style={{ background: `${PRI_COLORS[r.priority] || '#3b82f6'}15`, color: PRI_COLORS[r.priority] || '#3b82f6', padding: '2px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700 }}>{r.priority}</span>}
                                                 </td>
                                                 <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--text-secondary)' }}>
                                                     {r.description}
