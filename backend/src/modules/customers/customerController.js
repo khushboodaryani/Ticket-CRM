@@ -100,9 +100,9 @@ export const createCustomer = async (req, res) => {
             for (const sla of sla_overrides) {
                 if (sla.priority_id) {
                     await connection.query(
-                        `INSERT INTO sla_policies_new (name, customer_id, priority_id, resolution_hrs, first_response_hrs)
-                         VALUES (?, ?, ?, ?, ?)`,
-                        [`Override - Customer ${customerId} - Prio ${sla.priority_id}`, customerId, sla.priority_id, sla.resolution_hrs || 4, sla.first_response_hrs || 1.0]
+                        `INSERT INTO sla_policies_new (name, customer_id, priority_id, resolution_hrs, first_response_hrs, escalation_1_min, escalation_2_min, escalation_3_min)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [`Override - Customer ${customerId} - Prio ${sla.priority_id}`, customerId, sla.priority_id, sla.resolution_hrs || 4, sla.first_response_hrs || 1.0, sla.escalation_1_min || null, sla.escalation_2_min || null, sla.escalation_3_min || null]
                     );
                 }
             }

@@ -24,11 +24,20 @@ export default function Customers() {
     const [domainSaving, setDomainSaving] = useState(false)
     const [customerProjects, setCustomerProjects] = useState([])
 
+    const [slaCategories, setSlaCategories] = useState([])
+    const [activeSlaCat, setActiveSlaCat] = useState(null)
+
     const load = () => {
         setLoading(true)
         api.get('/customers').then(r => setCustomers(r.data.customers)).finally(() => setLoading(false))
     }
-    useEffect(() => { load() }, [])
+    const loadCategories = () => {
+        api.get('/sla/categories').then(r => {
+            setSlaCategories(r.data.categories || []);
+            if (r.data.categories?.length > 0) setActiveSlaCat(r.data.categories[0].id);
+        }).catch(() => {})
+    }
+    useEffect(() => { load(); loadCategories(); }, [])
 
     const loadDefaultsForNew = async () => {
         setSlaLoading(true)
@@ -97,7 +106,10 @@ export default function Customers() {
             await api.post(`/sla/customer/${editItem.id}`, {
                 priority_id: sla.priority_id,
                 resolution_time_hours: sla.resolution_time_hours,
-                first_response_hrs: sla.first_response_hrs
+                first_response_hrs: sla.first_response_hrs,
+                escalation_1_min: sla.escalation_1_min,
+                escalation_2_min: sla.escalation_2_min,
+                escalation_3_min: sla.escalation_3_min
             })
             toast.success(`SLA for ${sla.priority_name} updated`)
         } catch { toast.error("Failed to save SLA override") }
@@ -115,7 +127,10 @@ export default function Customers() {
                     sla_overrides: customerSlas.filter(s => s.enabled).map(s => ({
                         priority_id: s.priority_id,
                         resolution_hrs: s.resolution_time_hours,
-                        first_response_hrs: s.first_response_hrs
+                        first_response_hrs: s.first_response_hrs,
+                        escalation_1_min: s.escalation_1_min,
+                        escalation_2_min: s.escalation_2_min,
+                        escalation_3_min: s.escalation_3_min
                     }))
                 }
                 await api.post('/customers', payload)
@@ -126,11 +141,40 @@ export default function Customers() {
         setSaving(false)
     }
 
-    const renderSlaOverrides = () => (
+    const renderSlaOverrides = () => {
+        const activeCatData = slaCategories.find(c => c.id === activeSlaCat);
+        const filteredSlas = customerSlas.filter(s => activeCatData && s.category_name === activeCatData.name);
+
+        return (
         <div style={{ background: 'var(--bg-app)', padding: 16, borderRadius: 16, border: '1px solid var(--border)', marginBottom: 20 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>
                 Categorical SLA Policy {editItem ? 'Overrides' : 'Configuration'}
             </div>
+
+            {/* Category Tabs */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '1px solid var(--border)', paddingBottom: 8, overflowX: 'auto' }}>
+                {slaCategories.map(cat => (
+                    <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setActiveSlaCat(cat.id)}
+                        style={{
+                            padding: '6px 12px',
+                            background: activeSlaCat === cat.id ? 'var(--bg-accent-subtle)' : 'transparent',
+                            color: activeSlaCat === cat.id ? 'var(--accent)' : 'var(--text-muted)',
+                            border: 'none',
+                            borderRadius: 6,
+                            cursor: 'pointer',
+                            fontSize: 12,
+                            fontWeight: activeSlaCat === cat.id ? 600 : 500,
+                            whiteSpace: 'nowrap'
+                        }}
+                    >
+                        {cat.name} ({cat.prefix} Series)
+                    </button>
+                ))}
+            </div>
+
             <div className="table-wrap" style={{ border: 'none', background: 'transparent' }}>
                 <table style={{ fontSize: 12 }}>
                     <thead>
@@ -139,12 +183,16 @@ export default function Customers() {
                             <th>Priority Tier</th>
                             <th>Resolution (Hrs)</th>
                             <th>Response (Min)</th>
+                            <th>L1 (Min)</th>
+                            <th>L2 (Min)</th>
+                            <th>L3 (Min)</th>
                             <th></th>
                         </tr>
                     </thead>
                     <tbody>
                         {slaLoading ? <tr><td colSpan={5} style={{ textAlign: 'center' }}>Loading tiers...</td></tr> :
-                         customerSlas.map(s => (
+                         filteredSlas.length === 0 ? <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No priorities configured for this category.</td></tr> :
+                         filteredSlas.map(s => (
                             <tr key={s.priority_id} style={{ opacity: s.enabled ? 1 : 0.6, transition: 'opacity 0.2s' }}>
                                 <td>
                                     <input 
@@ -163,7 +211,7 @@ export default function Customers() {
                                 </td>
                                 <td>
                                     <input 
-                                        type="number" step="0.5" className="input input-sm" style={{ width: 60 }} 
+                                        type="number" step="0.5" className="input input-sm" style={{ width: 80 }} 
                                         disabled={!s.enabled}
                                         value={s.resolution_time_hours} 
                                         onChange={e => handleSlaOverrideChange(s.priority_id, 'resolution_time_hours', e.target.value)}
@@ -171,10 +219,34 @@ export default function Customers() {
                                 </td>
                                 <td>
                                     <input 
-                                        type="number" step="1" className="input input-sm" style={{ width: 60 }} 
+                                        type="number" step="1" className="input input-sm" style={{ width: 80 }} 
                                         disabled={!s.enabled}
                                         value={Math.round((s.first_response_hrs || 0) * 60)} 
                                         onChange={e => handleSlaOverrideChange(s.priority_id, 'response_mins', e.target.value)}
+                                    />
+                                </td>
+                                <td>
+                                    <input 
+                                        type="number" step="1" className="input input-sm" style={{ width: 80 }} 
+                                        disabled={!s.enabled}
+                                        value={s.escalation_1_min || 60} 
+                                        onChange={e => handleSlaOverrideChange(s.priority_id, 'escalation_1_min', e.target.value)}
+                                    />
+                                </td>
+                                <td>
+                                    <input 
+                                        type="number" step="1" className="input input-sm" style={{ width: 80 }} 
+                                        disabled={!s.enabled}
+                                        value={s.escalation_2_min || 120} 
+                                        onChange={e => handleSlaOverrideChange(s.priority_id, 'escalation_2_min', e.target.value)}
+                                    />
+                                </td>
+                                <td>
+                                    <input 
+                                        type="number" step="1" className="input input-sm" style={{ width: 80 }} 
+                                        disabled={!s.enabled}
+                                        value={s.escalation_3_min || 180} 
+                                        onChange={e => handleSlaOverrideChange(s.priority_id, 'escalation_3_min', e.target.value)}
                                     />
                                 </td>
                                 <td>
@@ -203,7 +275,7 @@ export default function Customers() {
                 }
             </div>
         </div>
-    );
+    )};
 
     // Domain management functions
     const openDomainManager = async (customer) => {

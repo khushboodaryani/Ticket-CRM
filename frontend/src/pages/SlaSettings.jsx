@@ -1,6 +1,7 @@
 import { useEffect, useState, Fragment } from 'react'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
+import BusinessHoursPanel from '../components/Shared/BusinessHoursPanel'
 import { toast } from 'react-hot-toast'
 
 const PRIORITY_COLORS = {
@@ -21,6 +22,7 @@ const formatResponseTime = (hrs) => {
 }
 
 export default function SlaSettings() {
+    const [activeTab, setActiveTab] = useState('policies') // 'policies' | 'business_hours'
     const [policies, setPolicies] = useState([])
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState(null)
@@ -32,7 +34,10 @@ export default function SlaSettings() {
         category_id: '',
         level: 1,
         resolution_time_hours: 4,
-        first_response_hrs: 1.0
+        first_response_hrs: 1.0,
+        escalation_1_min: 60,
+        escalation_2_min: 120,
+        escalation_3_min: 180
     })
 
     // Auto-suggest next level and name when category changes
@@ -94,7 +99,10 @@ export default function SlaSettings() {
         try {
             const payload = {
                 resolution_time_hours: policy.resolution_time_hours,
-                first_response_hrs: policy.first_response_hrs
+                first_response_hrs: policy.first_response_hrs,
+                escalation_1_min: policy.escalation_1_min,
+                escalation_2_min: policy.escalation_2_min,
+                escalation_3_min: policy.escalation_3_min
             }
 
             await api.put(`/sla/${policy.id}`, payload)
@@ -119,13 +127,17 @@ export default function SlaSettings() {
                 category_id: parseInt(newPriority.category_id, 10),
                 level: parseInt(newPriority.level, 10) || 1,
                 resolution_time_hours: parseFloat(newPriority.resolution_time_hours) || 4,
-                first_response_hrs: parseFloat(newPriority.first_response_hrs) || 1.0
+                first_response_hrs: parseFloat(newPriority.first_response_hrs) || 1.0,
+                escalation_1_min: parseInt(newPriority.escalation_1_min, 10) || 60,
+                escalation_2_min: parseInt(newPriority.escalation_2_min, 10) || 120,
+                escalation_3_min: parseInt(newPriority.escalation_3_min, 10) || 180
             })
             toast.success(`Priority ${newPriority.priority} created!`)
             setShowAddForm(false)
             setNewPriority({
                 priority: '', category_id: 1, level: 1,
-                resolution_time_hours: 4, first_response_hrs: 1.0
+                resolution_time_hours: 4, first_response_hrs: 1.0,
+                escalation_1_min: 60, escalation_2_min: 120, escalation_3_min: 180
             })
             await fetchData()
         } catch (err) {
@@ -154,8 +166,43 @@ export default function SlaSettings() {
             <Topbar title="SLA Settings" subtitle="Configure automated resolution deadlines, response targets, and escalation triggers." />
             
             <div className="page-body">
-                <div className="card">
-                    <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                {/* Tabs */}
+                <div style={{ display: 'flex', gap: 24, borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
+                    <button 
+                        onClick={() => setActiveTab('policies')}
+                        style={{
+                            background: 'transparent',
+                            border: 'none',
+                            padding: '0 4px 12px 4px',
+                            cursor: 'pointer',
+                            fontSize: 14,
+                            fontWeight: 600,
+                            color: activeTab === 'policies' ? 'var(--primary)' : 'var(--text)',
+                            borderBottom: activeTab === 'policies' ? '2px solid var(--primary)' : '2px solid transparent'
+                        }}
+                    >
+                        SLA Policies
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('business_hours')}
+                        style={{
+                            background: 'transparent',
+                            border: 'none',
+                            padding: '0 4px 12px 4px',
+                            cursor: 'pointer',
+                            fontSize: 14,
+                            fontWeight: 600,
+                            color: activeTab === 'business_hours' ? 'var(--primary)' : 'var(--text)',
+                            borderBottom: activeTab === 'business_hours' ? '2px solid var(--primary)' : '2px solid transparent'
+                        }}
+                    >
+                        Business Hours
+                    </button>
+                </div>
+
+                {activeTab === 'policies' && (
+                    <div className="card">
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div className="card-title">SLA Policies by Priority</div>
                         <button
                             className="btn btn-primary btn-sm"
@@ -236,6 +283,33 @@ export default function SlaSettings() {
                                     style={{ width: 80, borderRadius: 8 }}
                                 />
                             </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <label className="form-label" style={{ fontSize: 11 }}>L1 (Min)</label>
+                                <input
+                                    type="number" className="input input-sm"
+                                    value={newPriority.escalation_1_min || ''} min={1}
+                                    onChange={e => setNewPriority(p => ({ ...p, escalation_1_min: e.target.value }))}
+                                    style={{ width: 80, borderRadius: 8 }}
+                                />
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <label className="form-label" style={{ fontSize: 11 }}>L2 (Min)</label>
+                                <input
+                                    type="number" className="input input-sm"
+                                    value={newPriority.escalation_2_min || ''} min={1}
+                                    onChange={e => setNewPriority(p => ({ ...p, escalation_2_min: e.target.value }))}
+                                    style={{ width: 80, borderRadius: 8 }}
+                                />
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <label className="form-label" style={{ fontSize: 11 }}>L3 (Min)</label>
+                                <input
+                                    type="number" className="input input-sm"
+                                    value={newPriority.escalation_3_min || ''} min={1}
+                                    onChange={e => setNewPriority(p => ({ ...p, escalation_3_min: e.target.value }))}
+                                    style={{ width: 80, borderRadius: 8 }}
+                                />
+                            </div>
                             <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 2 }}>
                                 <button
                                     className="btn btn-primary btn-sm"
@@ -261,8 +335,11 @@ export default function SlaSettings() {
                             <thead>
                                 <tr>
                                     <th>Priority</th>
-                                    <th>Resolution Target (Hours)</th>
-                                    <th>Response Target (Min)</th>
+                                    <th>Resolution (Hrs)</th>
+                                    <th>Response (Min)</th>
+                                    <th>L1 (m)</th>
+                                    <th>L2 (m)</th>
+                                    <th>L3 (m)</th>
                                     <th>Action</th>
                                 </tr>
                             </thead>
@@ -280,7 +357,7 @@ export default function SlaSettings() {
                                         return (
                                             <Fragment key={cat.id}>
                                                 <tr style={{ background: 'var(--bg-app)', borderBottom: '1px solid var(--border)' }}>
-                                                    <td colSpan={4} style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                                                    <td colSpan={7} style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
                                                         {cat.name} Category ({cat.prefix} Series)
                                                     </td>
                                                 </tr>
@@ -320,6 +397,36 @@ export default function SlaSettings() {
                                                                 step={1}
                                                                 min={1}
                                                                 onChange={e => handleChange(p.id, 'first_response_hrs', (parseFloat(e.target.value) || 0) / 60)}
+                                                                style={{ width: 80, borderRadius: 8 }}
+                                                            />
+                                                        </td>
+                                                        <td>
+                                                            <input
+                                                                type="number"
+                                                                className="input input-sm"
+                                                                value={p.escalation_1_min || 60}
+                                                                min={1}
+                                                                onChange={e => handleChange(p.id, 'escalation_1_min', e.target.value)}
+                                                                style={{ width: 80, borderRadius: 8 }}
+                                                            />
+                                                        </td>
+                                                        <td>
+                                                            <input
+                                                                type="number"
+                                                                className="input input-sm"
+                                                                value={p.escalation_2_min || 120}
+                                                                min={1}
+                                                                onChange={e => handleChange(p.id, 'escalation_2_min', e.target.value)}
+                                                                style={{ width: 80, borderRadius: 8 }}
+                                                            />
+                                                        </td>
+                                                        <td>
+                                                            <input
+                                                                type="number"
+                                                                className="input input-sm"
+                                                                value={p.escalation_3_min || 180}
+                                                                min={1}
+                                                                onChange={e => handleChange(p.id, 'escalation_3_min', e.target.value)}
                                                                 style={{ width: 80, borderRadius: 8 }}
                                                             />
                                                         </td>
@@ -382,6 +489,11 @@ export default function SlaSettings() {
                         </span>
                     </div>
                 </div>
+                )}
+                
+                {activeTab === 'business_hours' && (
+                    <BusinessHoursPanel />
+                )}
             </div>
         </>
     )
