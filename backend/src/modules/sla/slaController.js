@@ -158,21 +158,28 @@ export const createSLAPolicy = async (req, res) => {
 // DELETE /api/sla/:id — Remove a priority (soft delete via active flag)
 export const deleteSLAPolicy = async (req, res) => {
     const { id } = req.params;
+    console.log(`[DEBUG] Attempting to delete SLA Policy ID: ${id}`);
     try {
         const pool = connectDB();
         // 1. Find the priority_id from this policy
         const [policyRows] = await pool.query(`SELECT priority_id FROM sla_policies_new WHERE id = ?`, [id]);
+        
         if (policyRows.length) {
             const pid = policyRows[0].priority_id;
+            console.log(`[DEBUG] Found linked priority_id: ${pid}. Deactivating...`);
             // 2. Deactivate the priority tier
             await pool.query(`UPDATE priorities SET is_active = 0 WHERE id = ?`, [pid]);
+        } else {
+            console.warn(`[DEBUG] No policy found with ID: ${id}`);
         }
-        // 3. Deactivate the global policy
+
+        // 3. Deactivate the global policy record itself
         await pool.query(`UPDATE sla_policies_new SET is_active = 0 WHERE id = ?`, [id]);
         
+        console.log(`[DEBUG] Successfully deactivated policy ${id}`);
         return res.json({ success: true, message: `Priority tier deactivated.` });
     } catch (err) {
-        console.error("deleteSLAPolicy:", err);
+        console.error("deleteSLAPolicy Error:", err);
         return res.status(500).json({ success: false, message: "Server error." });
     }
 };

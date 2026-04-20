@@ -151,7 +151,7 @@ export async function getEffectiveSLAPolicies(pool) {
         FROM sla_policies_new sp
         JOIN priorities p ON sp.priority_id = p.id
         JOIN sla_priority_categories c ON p.category_id = c.id
-        WHERE sp.customer_id IS NULL AND sp.project_id IS NULL
+        WHERE sp.customer_id IS NULL AND sp.project_id IS NULL AND sp.is_active = 1 AND p.is_active = 1
         ORDER BY c.sort_order ASC, p.\`level\` ASC
     `);
     return rows;
