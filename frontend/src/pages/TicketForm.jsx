@@ -58,6 +58,8 @@ export default function TicketForm() {
     })
     const [file, setFile] = useState(null)
     const [slaPolicies, setSlaPolicies] = useState([])
+    const [queues, setQueues] = useState([])
+    const [loading, setLoading] = useState(false)
 
     useEffect(() => {
         api.get('/customers').then(r => setCustomers(r.data.customers))

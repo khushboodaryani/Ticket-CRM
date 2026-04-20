@@ -106,8 +106,10 @@ export const getTicketById = async (req, res) => {
         );
         if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
 
-        // -- IDEA 3: 1st Responder Auto-Assign (Atomic Claim for P-Series) --
-        if (rows[0].series_prefix === 'P' && !rows[0].assigned_to && req.user && rows[0].created_by !== req.user.userId) {
+        // -- IDEA 3: 1st Responder Auto-Assign (Atomic Claim for P1 EMERGENCY ONLY) --
+        // Only P1 triggers auto-claim + emergency broadcast. P2+ are standard critical tickets.
+        const ticketPriorityName = rows[0].priority?.toString().toUpperCase();
+        if (ticketPriorityName === 'P1' && !rows[0].assigned_to && req.user && rows[0].created_by !== req.user.userId) {
             const lockName = `p1_claim_${req.params.id}`;
             const [lockRes] = await pool.query(`SELECT GET_LOCK(?, 5) as locked`, [lockName]);
             

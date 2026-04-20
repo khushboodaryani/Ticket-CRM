@@ -476,6 +476,64 @@ export async function resolveCustomerByDomain(conn, pool, senderEmail, senderNam
     return null; // Signal: do NOT create ticket
 }
 
+/**
+ * Resolve Priority based on keywords in SUBJECT LINE ONLY (Case-Insensitive).
+ * 
+ * Zoho-inspired approach: Only the subject line determines priority category.
+ * Body text is ignored to prevent false positives from common English words.
+ * 
+ * Returns: { categoryId, isEmergency }
+ *   - isEmergency=true  → use P1 directly (triggers emergency broadcast)
+ *   - isEmergency=false → use the LOWEST priority in that category (default tier)
+ *
+ * Emergency: Subject contains BOTH a critical-category indicator AND an emergency phrase.
+ *   Emergency phrases: "server down", "system down", "crash", "emergency", "outage"
+ *   → This ensures only true emergencies trigger P1 + broadcast to all staff.
+ *
+ * Category keywords (subject only, word-boundary matched):
+ *   "critical"           → Category 1 (P-series), default lowest P tier
+ *   "high" / "urgent"    → Category 2 (Q-series), default lowest Q tier
+ *   "medium"             → Category 3 (R-series), default lowest R tier
+ *   "low"                → Category 4 (S-series), default lowest S tier
+ *   (no match)           → Category 2 (Q-series), default — safe fallback
+ */
+function resolvePriorityFromText(subject = '', body = '') {
+    // IMPORTANT: Only scan SUBJECT for keywords. Body is too noisy.
+    const subjectLower = (subject || '').toLowerCase();
+
+    // Word-boundary helper — prevents "highlighted" matching "high", etc.
+    const hasWord = (text, word) => new RegExp(`\\b${word}\\b`, 'i').test(text);
+    const hasPhrase = (text, phrase) => text.includes(phrase.toLowerCase());
+
+    // 1. Emergency detection: subject must contain an emergency phrase
+    //    Emergency phrases are multi-word or specific enough to avoid false positives
+    const emergencyPhrases = ['server down', 'system down', 'crash', 'emergency', 'outage'];
+    const hasEmergencyPhrase = emergencyPhrases.some(phrase => hasPhrase(subjectLower, phrase));
+
+    // Emergency = emergency phrase present (these inherently imply critical severity)
+    if (hasEmergencyPhrase) {
+        logger.info(`[EmailPoller] 🚨 Emergency keyword detected in subject: "${subject}"`);
+        return { categoryId: 1, isEmergency: true };   // → P1 (highest severity)
+    }
+
+    // 2. Category keyword scan — subject only, word-boundary, most severe first
+    if (hasWord(subjectLower, 'critical')) {
+        return { categoryId: 1, isEmergency: false };   // → lowest P (e.g. P2)
+    }
+    if (hasWord(subjectLower, 'high') || hasWord(subjectLower, 'urgent')) {
+        return { categoryId: 2, isEmergency: false };   // → lowest Q (e.g. Q1)
+    }
+    if (hasWord(subjectLower, 'medium')) {
+        return { categoryId: 3, isEmergency: false };   // → lowest R (e.g. R1)
+    }
+    if (hasWord(subjectLower, 'low')) {
+        return { categoryId: 4, isEmergency: false };   // → lowest S (e.g. S1)
+    }
+
+    // 3. No keyword matched — default to High (Q) category
+    return { categoryId: 2, isEmergency: false };
+}
+
 async function processOneEmail(pool, msg, connection, defaultProjectId, defaultPriority, systemUserId) {
     const allPart = msg.parts.find(p => p.which === '');
     if (!allPart) return;
@@ -824,15 +882,24 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
         // 5. Create Ticket (Relational SLA 2.1)
         const { SlaCalculator } = await import('./sla/calculator.js');
-        let finalPriority = defaultPriority;
         
-        // Dynamic Resolution: Try exact name, then partial name, then global fallback
+        // Dynamic Resolution: Scan keywords (Case-Insensitive)
+        const { categoryId, isEmergency } = resolvePriorityFromText(rawSubject, bodyText);
+        
+        // Map to DB priority using category_id:
+        //   Emergency → P1 (level ASC = most severe)
+        //   Normal    → Lowest tier in that category (level DESC = least severe default)
+        const sortOrder = isEmergency ? 'ASC' : 'DESC';
         const [prioRows] = await pool.query(
-            `SELECT id, name FROM priorities WHERE name = ? OR name LIKE ? ORDER BY is_active DESC, level ASC LIMIT 1`, 
-            [finalPriority, `%${finalPriority}%`]
+            `SELECT id, name FROM priorities 
+             WHERE category_id = ? AND is_active = 1 
+             ORDER BY level ${sortOrder} LIMIT 1`,
+            [categoryId]
         );
         const priorityId = prioRows[0]?.id || 2; // Fallback to Q1 (id 2)
         const priorityName = prioRows[0]?.name || 'Q1';
+        const finalPriority = priorityName; // For Payload
+        logger.info(`[EmailPoller] Priority resolved: keyword_cat=${categoryId} emergency=${isEmergency} → ${priorityName} (ID:${priorityId})`);
 
         const resolvedTz = await resolveTicketTimezone(pool, { customerId, projectId: resolvedProjectId });
         const slaPolicy = await resolveSlaPolicy(pool, { customerId, projectId: resolvedProjectId, priorityId });
@@ -913,12 +980,34 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                 source: 'email' 
             }
         });
+        
+        // Step 7: Acknowledgement is handled by workflowEngine → handleTicketCreatedNotification
+        // DO NOT send here — it would cause DUPLICATE emails to the customer.
+        // The workflow engine sends the FINAL version with corrected ETR after rule processing.
+
+        // Step 7b: Emergency Broadcast (P1 only — when emergency keywords detected)
+        if (isEmergency && !isAutomated) {
+            try {
+                logger.info(`[EmailPoller] 🚨 EMERGENCY P1 detected for ${ticketNumber}. Triggering broadcast.`);
+                await sendEmergencyBroadcast({
+                    id: ticketId,
+                    ticket_number: ticketNumber,
+                    category: cleanSubject.slice(0, 250),
+                    priority: priorityName,
+                    description: description,
+                    etr: etr
+                });
+                logger.info(`[EmailPoller] ✅ Emergency broadcast completed for ${ticketNumber}`);
+            } catch (emergErr) {
+                logger.error(`[EmailPoller] Emergency broadcast failed (non-blocking): ${emergErr.message}`);
+            }
+        }
 
         // Mark as processed in email logs
         if (logId) await conn.query(`UPDATE email_logs SET status='processed' WHERE id=?`, [logId]);
         logger.info(`[EmailPoller] 🆕 Ingested ticket ${ticketNumber}. Handed off to Enterprise Pipeline.`);
 
-        // Real-time broadcasts for UI (Optional: can also be moved to workflow engine)
+        // Real-time broadcasts for UI
         try {
             if (!isAutomated) {
                 const { broadcast } = await import('./socketService.js');
