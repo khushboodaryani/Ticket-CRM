@@ -12,6 +12,7 @@ import { sendTicketNotification, sendEmergencyBroadcast, sendParticipantReplyNot
 import { getShiftAssignee } from './assignmentService.js';
 import { createNotification } from '../modules/notifications/notificationController.js';
 import { resolveSlaPolicy, getSlaCalendar, generateTicketNumber, resolveTicketTimezone } from '../modules/sla/slaPolicyService.js';
+import { SlaCalculator } from './sla/calculator.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -41,8 +42,9 @@ const MAX_MESSAGES_PER_CYCLE = parseInt(process.env.EMAIL_POLLER_BATCH_SIZE || '
 const EMAIL_POLLER_CRON = process.env.EMAIL_POLLER_CRON || '*/15 * * * * *';
 const PARTICIPANT_FALLBACK_WINDOW_HOURS = Math.max(1, parseInt(process.env.EMAIL_FALLBACK_WINDOW_HOURS || '720', 10));
 const STRICT_SUBJECT_PARTICIPANT_MATCH = String(process.env.STRICT_SUBJECT_PARTICIPANT_MATCH || 'false').toLowerCase() === 'true';
-const POLLER_START_TS = Date.now() - (60 * 60 * 1000); // Allow 1-hour backlog for testing session
+const POLLER_START_TS = Date.now() - (15 * 60 * 1000); // 15-minute window for safety (covers recent tests)
 const POLLER_START_IMAP_DATE = moment(POLLER_START_TS).tz(TZ).format('DD-MMM-YYYY');
+const systemUserId = parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10); // Default System/Admin user ID for auto-created tickets
 
 function stripHtml(html = '') {
     return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -907,6 +909,8 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         const calculator = new SlaCalculator(pool);
         
         const nowStr = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
+        const strMoment = calculator.computeDueDate(nowStr, slaPolicy.first_response_hrs, calendar);
+        const str = strMoment.format('YYYY-MM-DD HH:mm:ss');
         const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendar);
         const etr = etrMoment.format('YYYY-MM-DD HH:mm:ss');
 
@@ -921,7 +925,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             VALUES (?,?,?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, NULL, 'email', 'auto', ?, ?, ?)`,
             [
                 ticketNumber, rawSubject.slice(0, 500), customerId, resolvedProjectId, null, cleanSubject.slice(0, 250), 
-                priorityName, priorityId, description, nowStr, etr, systemUserId,
+                priorityName, priorityId, description, str, etr, systemUserId,
                 resolvedTz, slaPolicy.id, slaPolicy.version
             ]
         );

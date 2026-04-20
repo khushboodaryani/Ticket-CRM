@@ -6,10 +6,9 @@ import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 
-const DEFAULT_CATEGORIES = [
-    'Technical Issue', 'Billing', 'Feature Request', 'Complaint',
-    'Account', 'Network', 'Hardware', 'Software', 'Access'
-]
+// Dynamic categories will be fetched from /api/sla/categories
+const DEFAULT_CATEGORIES = []
+
 
 const getPriorityColor = (p, priorities = []) => {
     const found = priorities.find(x => x.name === p)
@@ -51,11 +50,8 @@ export default function TicketForm() {
         customer_id: '', project_id: '', category: '', priority: '',
         description: '', source: 'manual', assigned_to: '', queue_id: ''
     })
-    const [categories, setCategories] = useState(() => {
-        const saved = localStorage.getItem('custom_categories')
-        const custom = saved ? JSON.parse(saved) : []
-        return [...DEFAULT_CATEGORIES, ...custom, 'Other']
-    })
+    const [categories, setCategories] = useState([])
+
     const [file, setFile] = useState(null)
     const [slaPolicies, setSlaPolicies] = useState([])
     const [queues, setQueues] = useState([])
@@ -65,13 +61,32 @@ export default function TicketForm() {
         api.get('/customers').then(r => setCustomers(r.data.customers))
         api.get('/users', { params: { role: 'agent' } }).then(r => setUsers(r.data.users))
         api.get('/queues').then(r => setQueues(r.data.queues || []))
-        api.get('/sla').then(r => setSlaPolicies(r.data.policies || []))
+        api.get('/sla/categories').then(r => {
+            const cats = r.data.categories || []
+            setCategories(cats)
+            // Initial default category pick
+            if (cats.length > 0) set('category', cats[0].name)
+        })
         api.get('/sla/priorities').then(r => {
             const prios = r.data.priorities || []
             setPriorities(prios)
-            if (prios.length > 0) set('priority', prios[0].name)
+            // We'll set the priority based on the category in a separate effect or here if we have both
         })
     }, [])
+
+    // Synchronize Priority when Category changes
+    useEffect(() => {
+        if (form.category && priorities.length > 0) {
+            const filtered = priorities.filter(p => p.category === form.category)
+            if (filtered.length > 0) {
+                // If current priority isn't in this category, pick the first one
+                const currentInFiltered = filtered.find(p => p.name === form.priority)
+                if (!currentInFiltered) {
+                    set('priority', filtered[0].name)
+                }
+            }
+        }
+    }, [form.category, priorities])
 
     useEffect(() => {
         if (form.customer_id) {
@@ -180,40 +195,20 @@ export default function TicketForm() {
                             <div className="form-group">
                                 <label className="form-label">Category <span>*</span></label>
                                 <select className="input" value={form.category} 
-                                    onChange={e => {
-                                        const val = e.target.value;
-                                        if (val === 'Other') {
-                                            const newCat = window.prompt('Add new category:');
-                                            if (newCat && newCat.trim()) {
-                                                const trimmed = newCat.trim();
-                                                setCategories(prev => {
-                                                    if (!prev.includes(trimmed)) {
-                                                        const list = [...prev];
-                                                        list.splice(list.length - 1, 0, trimmed); // before 'Other'
-                                                        const customOnly = list.filter(c => !DEFAULT_CATEGORIES.includes(c) && c !== 'Other');
-                                                        localStorage.setItem('custom_categories', JSON.stringify(customOnly));
-                                                        return list;
-                                                    }
-                                                    return prev;
-                                                });
-                                                set('category', trimmed);
-                                            } else {
-                                                set('category', ''); // Reset on cancel
-                                            }
-                                        } else {
-                                            set('category', val);
-                                        }
-                                    }} required>
+                                    onChange={e => set('category', e.target.value)} required>
                                     <option value="">Select category…</option>
-                                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                                    {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
                                 </select>
                             </div>
                             <div className="form-group">
                                 <label className="form-label">Priority <span>*</span></label>
                                 <select className="input" value={form.priority} onChange={e => set('priority', e.target.value)} required>
-                                    {priorities.map(p => (
-                                        <option key={p.name} value={p.name}>{p.name}</option>
-                                    ))}
+                                    {priorities
+                                        .filter(p => !form.category || p.category === form.category)
+                                        .map(p => (
+                                            <option key={p.name} value={p.name}>{p.name}</option>
+                                        ))
+                                    }
                                 </select>
                             </div>
                         </div>

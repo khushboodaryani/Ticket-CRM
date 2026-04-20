@@ -34,7 +34,7 @@ export default function AgentsDashboard() {
     }, []);
 
     const filteredAgents = agents.filter(a => {
-        if (filters.name && !a.name?.toLowerCase().includes(filters.name.toLowerCase()) && !a.extension?.includes(filters.name)) return false;
+        if (filters.name && !a.name?.toLowerCase().includes(filters.name.toLowerCase())) return false;
         if (filters.status && (a.status || 'offline') !== filters.status) return false;
         return true;
     });
@@ -56,7 +56,7 @@ export default function AgentsDashboard() {
                 }}>
                     <input 
                         type="text" 
-                        placeholder="Search agent name or EXT..."
+                        placeholder="Search agent name..."
                         className="form-control"
                         style={{ flex: 1, background: 'var(--bg-app)', border: '1px solid var(--border)', borderRadius: 10, height: 40, fontSize: 13 }}
                         value={filters.name}
@@ -79,7 +79,6 @@ export default function AgentsDashboard() {
                             <thead>
                                 <tr>
                                     <th>Agent Name</th>
-                                    <th>Extension</th>
                                     <th>Current Status</th>
                                     <th>Daily Health</th>
                                     <th>Actions</th>
@@ -96,7 +95,6 @@ export default function AgentsDashboard() {
                                                 <div style={{ fontWeight: 700 }}>{a.name}</div>
                                             </div>
                                         </td>
-                                        <td style={{ fontFamily: 'monospace', fontWeight: 800, color: 'var(--accent)' }}>{a.extension || '---'}</td>
                                         <td>
                                             <span style={{ 
                                                 padding: '6px 14px', 
@@ -104,9 +102,9 @@ export default function AgentsDashboard() {
                                                 fontSize: 10, 
                                                 fontWeight: 800, 
                                                 textTransform: 'uppercase', 
-                                                background: `${STATUS_COLORS[a.is_online ? 'online' : 'offline']}20`,
-                                                color: STATUS_COLORS[a.is_online ? 'online' : 'offline'],
-                                                border: `1px solid ${STATUS_COLORS[a.is_online ? 'online' : 'offline']}30`
+                                                background: `${STATUS_COLORS[a.is_online ? 'online' : 'offline'] || '#6b7280'}20`,
+                                                color: STATUS_COLORS[a.is_online ? 'online' : 'offline'] || '#6b7280',
+                                                border: `1px solid ${STATUS_COLORS[a.is_online ? 'online' : 'offline'] || '#6b7280'}30`
                                             }}>
                                                 {a.is_online ? 'ONLINE' : 'OFFLINE'}
                                             </span>

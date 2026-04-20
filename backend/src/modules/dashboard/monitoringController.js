@@ -42,7 +42,7 @@ export const getSnapshot = async (req, res) => {
 
         // 3. Agent Presence
         const [agents] = await pool.query(
-            `SELECT id, name, extension, status, is_online, last_heartbeat
+            `SELECT id, name, status, is_online, last_heartbeat
              FROM users 
              WHERE role IN ('agent', 'tl')
              ORDER BY is_online DESC, name ASC`
@@ -137,7 +137,7 @@ export const getQueueDetail = async (req, res) => {
 
         // 1. Agents in this queue
         const [agents] = await pool.query(
-            `SELECT u.id, u.name, u.status, u.is_online, u.extension
+            `SELECT u.id, u.name, u.status, u.is_online
              FROM queue_agents qa
              JOIN users u ON qa.user_id = u.id
              WHERE qa.queue_id = ?`,
@@ -177,7 +177,7 @@ export const getAgentDetail = async (req, res) => {
 
         // 1. Agent basic info + current status
         const [agent] = await pool.query(
-            `SELECT id, name, extension, status, is_online, last_heartbeat FROM users WHERE id = ?`,
+            `SELECT id, name, status, is_online, last_heartbeat FROM users WHERE id = ?`,
             [id]
         );
 

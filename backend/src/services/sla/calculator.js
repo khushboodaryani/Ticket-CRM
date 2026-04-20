@@ -23,28 +23,26 @@ export class SlaCalculator {
         
         // 1. Convert start time to the destination timezone
         let current = moment.tz(startTime, timezone);
-        let remainingMinutes = Math.round(durationHours * 60);
+        let remainingSeconds = Math.round(durationHours * 3600);
 
         // 2. Formatting holiday dates for lookup (YYYY-MM-DD)
         const holidaySet = new Set(holidays.map(h => moment(h).format('YYYY-MM-DD')));
 
         // 3. Main Calculation Loop
         let safetyBreak = 0;
-        const MAX_ITERATIONS = 5000; // Prevent infinite loops in case of misconfigured calendars
+        const MAX_ITERATIONS = 2000; 
 
-        while (remainingMinutes > 0 && safetyBreak < MAX_ITERATIONS) {
+        while (remainingSeconds > 0 && safetyBreak < MAX_ITERATIONS) {
             safetyBreak++;
 
             const dateStr = current.format('YYYY-MM-DD');
-            const dayOfWeek = current.format('ddd'); // Mon, Tue...
+            const dayOfWeek = current.format('ddd');
 
-            // Is today a holiday?
             if (holidaySet.has(dateStr)) {
                 current.add(1, 'day').startOf('day');
                 continue;
             }
 
-            // Find all business windows for today
             const windowsToday = businessHours
                 .filter(bh => bh.day_of_week === dayOfWeek)
                 .map(bh => ({
@@ -58,29 +56,27 @@ export class SlaCalculator {
                 continue;
             }
 
-            let foundWindow = false;
+            let foundWindowForToday = false;
             for (const window of windowsToday) {
-                // If we are past this window, skip
                 if (current.isSameOrAfter(window.end)) continue;
-
-                // If we are before this window, jump to window start (User's specific requirement: "next business hour window open")
+                
                 if (current.isBefore(window.start)) {
                     current = window.start.clone();
                 }
 
-                // We are now inside the window
-                const minutesAvailable = window.end.diff(current, 'minutes');
-                const workDone = Math.min(remainingMinutes, minutesAvailable);
+                const secondsAvailable = window.end.diff(current, 'seconds');
+                if (secondsAvailable <= 0) continue;
 
-                current.add(workDone, 'minutes');
-                remainingMinutes -= workDone;
-                foundWindow = true;
+                const workDone = Math.min(remainingSeconds, secondsAvailable);
+                current.add(workDone, 'seconds');
+                remainingSeconds -= workDone;
+                foundWindowForToday = true;
 
-                if (remainingMinutes === 0) break;
+                if (remainingSeconds <= 0) break;
             }
 
-            // If no window found for the remaining part of today, jump to start of tomorrow
-            if (!foundWindow || (remainingMinutes > 0 && current.isSameOrAfter(windowsToday[windowsToday.length - 1].end))) {
+            // If we are deep into the end of the day or no windows were eligible, hop to tomorrow
+            if (remainingSeconds > 0) {
                 current.add(1, 'day').startOf('day');
             }
         }

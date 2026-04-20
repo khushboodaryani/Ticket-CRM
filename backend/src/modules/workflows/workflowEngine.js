@@ -135,23 +135,27 @@ async function processEnterpriseWorkflow(trigger, data) {
         const calendar = await getSlaCalendar(conn);
         const calculator = new SlaCalculator(conn);
         const etrMoment = calculator.computeDueDate(new Date(), slaPolicy.resolution_hrs, calendar);
+        const strMoment = calculator.computeDueDate(new Date(), slaPolicy.first_response_hrs, calendar);
         const finalEtr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
+        const finalStr = strMoment.format('YYYY-MM-DD HH:mm:ss');
 
         runLogs.push(`SLA Recalculated: ${finalEtr} (TZ: ${resolvedTz})`);
 
         // Step 4d: Atomic Save
         await conn.query(
             `UPDATE tickets SET 
+                priority = ?,
                 priority_id = ?, 
                 queue_id = ?, 
                 status = ?, 
+                str = ?,
                 etr = ?, 
                 resolved_timezone = ?,
                 sla_policy_id = ?,
                 sla_version = ?,
                 workflow_processed = 1 
              WHERE id = ?`,
-            [priorityId, finalQueueId, finalStatus, finalEtr, resolvedTz, slaPolicy.id, slaPolicy.version, ticketId]
+            [finalPriority, priorityId, finalQueueId, finalStatus, finalStr, finalEtr, resolvedTz, slaPolicy.id, slaPolicy.version, ticketId]
         );
 
         // Step 4e: Schedule Jobs

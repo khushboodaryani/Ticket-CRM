@@ -351,8 +351,8 @@ export const updateTicket = async (req, res) => {
             const [prioRow] = await pool.query(`SELECT id FROM priorities WHERE name = ?`, [priority]);
             if (prioRow.length) {
                 priorityId = prioRow[0].id;
-                updates.push("priority_id=?");
-                vals.push(priorityId);
+                updates.push("priority = ?", "priority_id = ?");
+                vals.push(priority, priorityId);
             }
         }
         if (description) { updates.push("description=?"); vals.push(description); }
