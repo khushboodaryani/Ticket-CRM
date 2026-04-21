@@ -42,8 +42,9 @@ const MAX_MESSAGES_PER_CYCLE = parseInt(process.env.EMAIL_POLLER_BATCH_SIZE || '
 const EMAIL_POLLER_CRON = process.env.EMAIL_POLLER_CRON || '*/15 * * * * *';
 const PARTICIPANT_FALLBACK_WINDOW_HOURS = Math.max(1, parseInt(process.env.EMAIL_FALLBACK_WINDOW_HOURS || '720', 10));
 const STRICT_SUBJECT_PARTICIPANT_MATCH = String(process.env.STRICT_SUBJECT_PARTICIPANT_MATCH || 'false').toLowerCase() === 'true';
-const POLLER_START_TS = Date.now() - (15 * 60 * 1000); // 15-minute window for safety (covers recent tests)
-const POLLER_START_IMAP_DATE = moment(POLLER_START_TS).tz(TZ).format('DD-MMM-YYYY');
+// Rolling 24-hour lookback window — recomputed each cycle so server restarts never cause missed emails.
+// The DB (email_logs) handles all deduplication; this is just an IMAP bandwidth limit.
+const POLLER_LOOKBACK_HOURS = parseInt(process.env.EMAIL_POLLER_LOOKBACK_HOURS || '24', 10);
 const systemUserId = parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10); // Default System/Admin user ID for auto-created tickets
 
 function stripHtml(html = '') {
@@ -200,36 +201,22 @@ export async function processEmails(connection) {
             return;
         }
         lockAcquired = true;
-        // We use 'ALL' instead of 'UNSEEN' because during testing, emails sent to oneself or viewed in the browser are auto-marked as read.
-        // The DB handles deduplication, and SINCE restricts it to recent emails.
-        const searchCriteria = ['ALL', ['SINCE', POLLER_START_IMAP_DATE]];
+        // Rolling 24-hour window: recomputed live each cycle so server restarts don't miss emails.
+        // DB deduplication (email_logs) prevents any double-processing.
+        const pollerSinceTs = Date.now() - (POLLER_LOOKBACK_HOURS * 60 * 60 * 1000);
+        const pollerSinceDate = moment(pollerSinceTs).tz(TZ).format('DD-MMM-YYYY');
+        const searchCriteria = ['ALL', ['SINCE', pollerSinceDate]];
         const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
 
         let messages = await connection.search(searchCriteria, fetchOptions);
         const rawCount = messages.length;
-
-        // IMAP SINCE is day-granularity, so enforce exact startup timestamp in-memory.
-        const startupFiltered = messages.filter(m => {
-            const d = m.attributes?.date ? new Date(m.attributes.date).getTime() : NaN;
-            if (Number.isNaN(d)) {
-                logger.info(`[EmailPoller] Message UID ${m.attributes?.uid} has No Date - keeping.`);
-                return true;
-            }
-            const isEligible = d >= POLLER_START_TS;
-            if (!isEligible) {
-                logger.info(`[EmailPoller] Skipping backlog email (UID: ${m.attributes?.uid}, Date: ${new Date(d).toString()}, PollerStart: ${new Date(POLLER_START_TS).toString()})`);
-            }
-            return isEligible;
-        });
-        const droppedBacklog = messages.length - startupFiltered.length;
-        messages = startupFiltered;
 
         if (messages.length > 0) {
             // Prioritize newest messages first and cap per-cycle batch size.
             messages = messages
                 .sort((a, b) => (b.attributes?.uid || 0) - (a.attributes?.uid || 0))
                 .slice(0, Math.max(1, MAX_MESSAGES_PER_CYCLE));
-            logger.info(`[EmailPoller] Search returned ${rawCount}. Processing ${messages.length}.${droppedBacklog > 0 ? ` Skipped ${droppedBacklog} pre-start message(s).` : ''}`);
+            logger.info(`[EmailPoller] Search returned ${rawCount} (SINCE ${pollerSinceDate}). Processing ${messages.length}.`);
         } else {
             isProcessing = false;
             logger.info(`[EmailPoller] No eligible unread emails in this cycle (search returned ${rawCount}).`);

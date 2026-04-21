@@ -8,7 +8,7 @@ import { logger } from "../../logger.js";
 import { createNotification } from "../notifications/notificationController.js";
 import { sendTicketNotification } from "../notifications/emailService.js";
 import { getShiftAssignee } from "../../services/assignmentService.js";
-import { resolveSlaPolicy, getSlaCalendar } from "../sla/slaPolicyService.js";
+import { resolveSlaPolicy, getSlaCalendar, generateTicketNumber, resolveTicketTimezone } from "../sla/slaPolicyService.js";
 import moment from "moment-timezone";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
@@ -200,8 +200,23 @@ export const approveDomain = async (req, res) => {
 
         // 8. Create tickets from all held emails
         const systemUserId = parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10);
-        const defaultPriority = process.env.EMAIL_DEFAULT_PRIORITY || 'P3';
         const createdTickets = [];
+
+        // Import the priority resolver from emailPoller (same keyword logic)
+        const resolvePriorityFromText = (subject = '') => {
+            const subjectLower = (subject || '').toLowerCase();
+            const hasWord = (text, word) => new RegExp(`\\b${word}\\b`, 'i').test(text);
+            const hasPhrase = (text, phrase) => text.includes(phrase.toLowerCase());
+
+            const emergencyPhrases = ['server down', 'system down', 'crash', 'emergency', 'outage'];
+            const hasEmergencyPhrase = emergencyPhrases.some(phrase => hasPhrase(subjectLower, phrase));
+            if (hasEmergencyPhrase) return { categoryId: 1, isEmergency: true };
+            if (hasWord(subjectLower, 'critical')) return { categoryId: 1, isEmergency: false };
+            if (hasWord(subjectLower, 'high') || hasWord(subjectLower, 'urgent')) return { categoryId: 2, isEmergency: false };
+            if (hasWord(subjectLower, 'medium')) return { categoryId: 3, isEmergency: false };
+            if (hasWord(subjectLower, 'low')) return { categoryId: 4, isEmergency: false };
+            return { categoryId: 2, isEmergency: false };
+        };
 
         for (const held of heldEmails) {
             try {
@@ -211,52 +226,47 @@ export const approveDomain = async (req, res) => {
                     .trim() || 'General Inquiry';
                 const description = (held.body || rawSubject).slice(0, 5000);
 
-                // Determine priority
-                let priority = defaultPriority;
-                const emergencyKeywords = ['server down', 'emergency', 'outage', 'critical', 'urgent', 'crashed'];
-                if (emergencyKeywords.some(kw => rawSubject.toLowerCase().includes(kw) || (held.body || '').toLowerCase().includes(kw))) {
-                    priority = 'P1';
-                }
+                // Dynamic priority from keywords (same as emailPoller)
+                const { categoryId, isEmergency } = resolvePriorityFromText(rawSubject);
+                const sortOrder = isEmergency ? 'ASC' : 'DESC';
+                const [prioRows] = await conn.query(
+                    `SELECT id, name FROM priorities WHERE category_id = ? AND is_active = 1 ORDER BY level ${sortOrder} LIMIT 1`,
+                    [categoryId]
+                );
+                const priorityId = prioRows[0]?.id || 2;
+                const priorityName = prioRows[0]?.name || 'Q1';
 
-                // Generate ticket number
-                const today = moment().tz(TZ).format('YYYYMMDD');
-                const lockName = `ticket_seq_${today}`;
-                await conn.query(`SELECT GET_LOCK(?, 5)`, [lockName]);
-                let ticketNumber;
-                try {
-                    const [countRow] = await conn.query(`SELECT COUNT(*) as cnt FROM tickets WHERE DATE(created_at) = CURDATE()`);
-                    const seq = String(countRow[0].cnt + 1).padStart(4, '0');
-                    ticketNumber = `TKT-${today}-${seq}`;
-                } finally {
-                    await conn.query(`SELECT RELEASE_LOCK(?)`, [lockName]);
-                }
+                // Generate proper ticket number (R-00XXX, P-00XXX, etc.)
+                const ticketNumber = await generateTicketNumber(pool, priorityId);
 
+                // SLA computation
                 const { SlaCalculator } = await import("../../services/sla/calculator.js");
-                const [prioRows] = await conn.query(`SELECT id FROM priorities WHERE name = ?`, [priority]);
-                const priorityId = prioRows[0]?.id;
-                
                 const slaPolicy = await resolveSlaPolicy(conn, { customerId: customer_id, projectId: effectiveProjectId, priorityId });
                 const resolvedTz = await resolveTicketTimezone(conn, { customerId: customer_id, projectId: effectiveProjectId });
                 const calendar = await getSlaCalendar(conn);
                 const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone || TZ };
                 const calculator = new SlaCalculator(conn);
-                
+
                 const nowStr = moment().tz(resolvedTz || TZ).format('YYYY-MM-DD HH:mm:ss');
+                const strMoment = calculator.computeDueDate(nowStr, slaPolicy.first_response_hrs, calendarForTicket);
+                const str = strMoment.format('YYYY-MM-DD HH:mm:ss');
                 const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendarForTicket);
                 const etr = etrMoment.format('YYYY-MM-DD HH:mm:ss');
 
-                let assigneeId = null;
-                try { assigneeId = await getShiftAssignee(null, priority); } catch (_) {}
-
-                // Create ticket
+                // Create ticket (matching emailPoller schema exactly)
                 const [tResult] = await conn.query(
-                    `INSERT INTO tickets (ticket_number, subject, customer_id, project_id, category, priority, priority_id, description, 
-                     status, escalation_level, sla_state, str, etr, created_by, assigned_to, source,
-                     resolved_timezone, sla_policy_id, sla_version)
-                     VALUES (?,?,?,?,?,?,?, ?, 'open', 1, 'active', ?, ?, ?, ?, 'email', ?, ?, ?)`,
-                    [ticketNumber, rawSubject.slice(0, 500), customer_id, effectiveProjectId,
-                     cleanSubject.slice(0, 250), priority, priorityId, description, nowStr, etr, systemUserId, assigneeId,
-                     resolvedTz, slaPolicy.id, slaPolicy.version]
+                    `INSERT INTO tickets (
+                        ticket_number, subject, customer_id, project_id, queue_id, category, priority, priority_id, description,
+                        status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, assignment_source,
+                        resolved_timezone, sla_policy_id, sla_version
+                    )
+                    VALUES (?,?,?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, NULL, 'email', 'auto', ?, ?, ?)`,
+                    [
+                        ticketNumber, rawSubject.slice(0, 500), customer_id, effectiveProjectId, null,
+                        cleanSubject.slice(0, 250), priorityName, priorityId, description,
+                        str, etr, systemUserId,
+                        resolvedTz, slaPolicy.id, slaPolicy.version
+                    ]
                 );
                 const ticketId = tResult.insertId;
 
@@ -293,20 +303,10 @@ export const approveDomain = async (req, res) => {
                     [held.id]
                 );
 
-                createdTickets.push({ ticketId, ticketNumber, sender: held.sender_email, subject: rawSubject });
-
-                // Notify assigned agent
-                if (assigneeId) {
-                    try {
-                        await createNotification(pool, {
-                            user_id: assigneeId,
-                            type: 'ticket_assigned',
-                            title: `Auto-Assigned: ${ticketNumber}`,
-                            body: `Released from domain approval: ${cleanSubject}`,
-                            entity_id: ticketId
-                        });
-                    } catch (_) {}
-                }
+                createdTickets.push({
+                    ticketId, ticketNumber, sender: held.sender_email,
+                    subject: rawSubject, priority: priorityName, etr
+                });
             } catch (ticketErr) {
                 logger.error(`[Approval] Failed to create ticket from held email ${held.id}: ${ticketErr.message}`);
             }
@@ -314,19 +314,31 @@ export const approveDomain = async (req, res) => {
 
         await conn.commit();
 
-        // Post-commit: send acknowledgement emails for created tickets (non-blocking)
+        // Post-commit: Fire the Enterprise Pipeline for each created ticket (queue routing, assignment, ack email)
         for (const ct of createdTickets) {
-            const ticketObj = {
-                id: ct.ticketId,
-                ticket_number: ct.ticketNumber,
-                category: ct.subject?.replace(/^(re|fwd?|reply):\s*/i, '').slice(0, 250) || 'General Inquiry',
-                priority: defaultPriority,
-                description: ct.subject,
-                etr: moment().tz(TZ).add(2, 'hours').format('YYYY-MM-DD HH:mm:ss')
-            };
-            sendTicketNotification(ticketObj, ct.sender).catch(err =>
-                logger.error(`[Approval] Ack email failed for ${ct.ticketNumber}: ${err.message}`)
-            );
+            try {
+                const { workflowEvents } = await import("../../modules/workflows/workflowEngine.js");
+                workflowEvents.emit('ticket_created', {
+                    ticketId: ct.ticketId,
+                    payload: {
+                        customer_id: customer_id,
+                        project_id: effectiveProjectId,
+                        category: ct.subject?.replace(/^(re|fwd?|reply):\s*/i, '').slice(0, 250) || 'General Inquiry',
+                        priority: ct.priority,
+                        status: 'open',
+                        source: 'email',
+                        queue_id: null
+                    }
+                });
+                logger.info(`[Approval] Enterprise Pipeline triggered for ${ct.ticketNumber}`);
+            } catch (pipeErr) {
+                logger.error(`[Approval] Pipeline trigger failed for ${ct.ticketNumber}: ${pipeErr.message}`);
+                // Fallback: send ack directly if pipeline fails
+                const ticketObj = { id: ct.ticketId, ticket_number: ct.ticketNumber, category: ct.subject, priority: ct.priority, etr: ct.etr };
+                sendTicketNotification(ticketObj, ct.sender).catch(e =>
+                    logger.error(`[Approval] Fallback ack failed for ${ct.ticketNumber}: ${e.message}`)
+                );
+            }
         }
 
         // Broadcast real-time update
