@@ -1,25 +1,20 @@
 // src/pages/TicketForm.jsx
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
-import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 
-// Dynamic categories will be fetched from /api/sla/categories
-const DEFAULT_CATEGORIES = []
-
-
-const getPriorityColor = (p, priorities = []) => {
-    const found = priorities.find(x => x.name === p)
+const getPriorityColor = (priorityName, priorities = []) => {
+    const found = priorities.find(item => item.name === priorityName)
     return found?.color_code || '#64748b'
 }
 
-const formatResponseSec = (sec) => {
-    if (!sec || sec <= 0) return '—'
-    if (sec < 60) return `${sec} sec`
-    if (sec < 3600) return `${Math.round(sec / 60)} min`
-    return `${(sec / 3600).toFixed(1).replace(/\.0$/, '')} hr`
+const formatResponseSec = (seconds) => {
+    if (!seconds || seconds <= 0) return '-'
+    if (seconds < 60) return `${seconds} sec`
+    if (seconds < 3600) return `${Math.round(seconds / 60)} min`
+    return `${(seconds / 3600).toFixed(1).replace(/\.0$/, '')} hr`
 }
 
 const ICON_MAIL = <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>
@@ -39,154 +34,294 @@ const ICON_USER_SEC = <svg width="16" height="16" viewBox="0 0 24 24" fill="none
 const ICON_CLIP = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
 const ICON_LAYERS = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
 
+const STATUS_OPTIONS = ['open', 'in_progress', 'pending', 'resolved', 'closed']
+
 export default function TicketForm() {
+    const { id } = useParams()
     const navigate = useNavigate()
-    const { user } = useAuth()
+    const isEditMode = Boolean(id)
+
     const [customers, setCustomers] = useState([])
     const [projects, setProjects] = useState([])
     const [users, setUsers] = useState([])
     const [priorities, setPriorities] = useState([])
-    const [form, setForm] = useState({
-        customer_id: '', project_id: '', category: '', priority: '',
-        description: '', source: 'manual', assigned_to: '', queue_id: ''
-    })
     const [categories, setCategories] = useState([])
-
-    const [file, setFile] = useState(null)
-    const [slaPolicies, setSlaPolicies] = useState([])
     const [queues, setQueues] = useState([])
+    const [file, setFile] = useState(null)
+    const [slaPolicies] = useState([])
     const [loading, setLoading] = useState(false)
+    const [bootLoading, setBootLoading] = useState(true)
+    const [originalQueueId, setOriginalQueueId] = useState('')
+    const [form, setForm] = useState({
+        customer_id: '',
+        project_id: '',
+        category: '',
+        priority: '',
+        description: '',
+        source: 'manual',
+        assigned_to: '',
+        queue_id: '',
+        status: 'open',
+    })
+
+    const setField = (key, value) => setForm(prev => ({ ...prev, [key]: value }))
 
     useEffect(() => {
-        api.get('/customers').then(r => setCustomers(r.data.customers))
-        api.get('/users', { params: { role: 'agent' } }).then(r => setUsers(r.data.users))
-        api.get('/queues').then(r => setQueues(r.data.queues || []))
-        api.get('/sla/categories').then(r => {
-            const cats = r.data.categories || []
-            setCategories(cats)
-            // Initial default category pick
-            if (cats.length > 0) set('category', cats[0].name)
-        })
-        api.get('/sla/priorities').then(r => {
-            const prios = r.data.priorities || []
-            setPriorities(prios)
-            // We'll set the priority based on the category in a separate effect or here if we have both
-        })
-    }, [])
+        let active = true
 
-    // Synchronize Priority when Category changes
-    useEffect(() => {
-        if (form.category && priorities.length > 0) {
-            const filtered = priorities.filter(p => p.category === form.category)
-            if (filtered.length > 0) {
-                // If current priority isn't in this category, pick the first one
-                const currentInFiltered = filtered.find(p => p.name === form.priority)
-                if (!currentInFiltered) {
-                    set('priority', filtered[0].name)
+        const loadDependencies = async () => {
+            setBootLoading(true)
+            try {
+                const [
+                    customerRes,
+                    userRes,
+                    queueRes,
+                    categoryRes,
+                    priorityRes,
+                    ticketRes,
+                ] = await Promise.all([
+                    api.get('/customers').catch(() => ({ data: { customers: [] } })),
+                    api.get('/users', { params: { is_active: true } }).catch(() => ({ data: { users: [] } })),
+                    api.get('/queues').catch(() => ({ data: { queues: [] } })),
+                    api.get('/sla/categories').catch(() => ({ data: { categories: [] } })),
+                    api.get('/sla/priorities').catch(() => ({ data: { priorities: [] } })),
+                    isEditMode ? api.get(`/tickets/${id}`) : Promise.resolve(null),
+                ])
+
+                if (!active) return
+
+                const customerRows = customerRes?.data?.customers || []
+                const userRows = (userRes?.data?.users || []).filter(user => ['agent', 'tl'].includes(user.role))
+                const queueRows = queueRes?.data?.queues || []
+                const priorityRows = priorityRes?.data?.priorities || []
+                const rawCategoryRows = categoryRes?.data?.categories || []
+                const fallbackCategoryRows = [...new Set(priorityRows.map(priority => priority.category).filter(Boolean))]
+                    .map((name, index) => ({ id: `fallback-${index}`, name }))
+                const categoryRows = rawCategoryRows.length > 0 ? rawCategoryRows : fallbackCategoryRows
+
+                setCustomers(customerRows)
+                setUsers(userRows)
+                setQueues(queueRows)
+                setPriorities(priorityRows)
+                setCategories(categoryRows)
+
+                const initialCategory = categoryRows[0]?.name || ''
+
+                if (isEditMode && ticketRes?.data?.ticket) {
+                    const ticket = ticketRes.data.ticket
+                    setOriginalQueueId(ticket.queue_id || '')
+                    setForm(prev => ({
+                        ...prev,
+                        customer_id: ticket.customer_id || '',
+                        project_id: ticket.project_id || '',
+                        category: ticket.category || initialCategory,
+                        priority: ticket.priority || '',
+                        description: ticket.description || '',
+                        source: ticket.source || 'manual',
+                        assigned_to: ticket.assigned_to || '',
+                        queue_id: ticket.queue_id || '',
+                        status: ticket.status || 'open',
+                    }))
+                } else {
+                    setForm(prev => ({
+                        ...prev,
+                        category: prev.category || initialCategory,
+                    }))
                 }
+            } catch (err) {
+                toast.error('Failed to load ticket form')
+            } finally {
+                if (active) setBootLoading(false)
             }
         }
-    }, [form.category, priorities])
+
+        loadDependencies()
+        return () => { active = false }
+    }, [id, isEditMode])
 
     useEffect(() => {
+        if (form.category && priorities.length > 0) {
+            const filtered = priorities.filter(priority => priority.category === form.category)
+            if (filtered.length > 0 && !filtered.find(priority => priority.name === form.priority)) {
+                setField('priority', filtered[0].name)
+            }
+        }
+    }, [form.category, form.priority, priorities])
+
+    useEffect(() => {
+        let active = true
         if (form.customer_id) {
-            api.get('/projects', { params: { customer_id: form.customer_id } }).then(r => setProjects(r.data.projects))
+            api.get('/projects', { params: { customer_id: form.customer_id } })
+                .then(response => {
+                    if (active) setProjects(response.data.projects || [])
+                })
+                .catch(() => {
+                    if (active) setProjects([])
+                })
         } else {
             setProjects([])
         }
+
+        return () => { active = false }
     }, [form.customer_id])
 
-    const set = (k, v) => setForm(p => ({ ...p, [k]: v }))
+    const handleSubmit = async (event) => {
+        event.preventDefault()
 
-    const handleSubmit = async (e) => {
-        e.preventDefault()
-        if (!form.customer_id || !form.project_id || !form.category || !form.description)
-            return toast.error('Please fill all required fields.')
+        if (!isEditMode && (!form.customer_id || !form.project_id || !form.category || !form.description)) {
+            toast.error('Please fill all required fields.')
+            return
+        }
+
+        if (isEditMode && (!form.category || !form.description)) {
+            toast.error('Please fill all required fields.')
+            return
+        }
+
         setLoading(true)
         try {
-            const fd = new FormData()
-            Object.entries(form).forEach(([k, v]) => { if (v) fd.append(k, v) })
-            if (file) fd.append('attachment', file)
-            const { data } = await api.post('/tickets', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-            toast.success(`Ticket ${data.ticket_number} created!`)
-            navigate(`/tickets/${data.ticketId}`)
-        } catch (err) { toast.error(err.response?.data?.message || 'Failed to create ticket') }
-        setLoading(false)
+            const formData = new FormData()
+            Object.entries(form).forEach(([key, value]) => {
+                if (value !== undefined && value !== null && value !== '') formData.append(key, value)
+            })
+            if (file) formData.append('attachment', file)
+
+            if (isEditMode) {
+                await api.put(`/tickets/${id}`, formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                })
+                if (String(form.queue_id || '') !== String(originalQueueId || '')) {
+                    await api.put(`/tickets/${id}/queue`, { queue_id: form.queue_id || null })
+                }
+                toast.success('Ticket updated!')
+                navigate(`/tickets/${id}`)
+            } else {
+                const { data } = await api.post('/tickets', formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                })
+                toast.success(`Ticket ${data.ticket_number} created!`)
+                navigate(`/tickets/${data.ticketId}`)
+            }
+        } catch (err) {
+            toast.error(err.response?.data?.message || (isEditMode ? 'Failed to update ticket' : 'Failed to create ticket'))
+        } finally {
+            setLoading(false)
+        }
     }
 
-    const pColor = getPriorityColor(form.priority)
-    const pPolicy = slaPolicies.find(p => p.priority === form.priority)
+    const currentCustomer = customers.find(customer => String(customer.id) === String(form.customer_id))
+    const currentProject = projects.find(project => String(project.id) === String(form.project_id))
+    const priorityMeta = priorities.find(priority => priority.name === form.priority)
+    const pPolicy = slaPolicies.find(policy => policy.priority === form.priority)
     const slaDetail = pPolicy
         ? `Response ${formatResponseSec(pPolicy.response_time_sec)} · Escalates in ${pPolicy.escalation_1_min} min`
-        : `No SLA policy configured`
+        : (priorityMeta ? `${priorityMeta.category} priority workflow will apply` : 'No SLA policy configured')
+
+    if (bootLoading) {
+        return (
+            <>
+                <Topbar title={isEditMode ? 'Edit Ticket' : 'Create Ticket'} />
+                <div className="loader-center"><div className="spinner spinner-lg" /></div>
+            </>
+        )
+    }
 
     return (
         <>
             <Topbar
-                title="Create Ticket"
-                subtitle="Fill all required fields to raise a support ticket"
-                actions={<button className="btn btn-secondary btn-sm" onClick={() => navigate('/tickets')}>← Back to Tickets</button>}
+                title={isEditMode ? 'Edit Ticket' : 'Create Ticket'}
+                subtitle={isEditMode ? 'Update ticket details without affecting the conversation trail' : 'Fill all required fields to raise a support ticket'}
+                actions={<button className="btn btn-secondary btn-sm" onClick={() => navigate(isEditMode ? `/tickets/${id}` : '/tickets')}>← Back</button>}
             />
             <div className="page-body">
                 <form onSubmit={handleSubmit} style={{ maxWidth: 860, display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-                    {/* ── Source selector ── */}
-                    <div className="card" style={{ padding: '20px 24px' }}>
-                        <div className="card-title" style={{ marginBottom: 14 }}>
-                            <span style={{ marginRight: 8 }}>📡</span> Ticket Source
-                        </div>
-                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                            {SOURCES.map(s => (
-                                <button
-                                    key={s.value}
-                                    type="button"
-                                    onClick={() => set('source', s.value)}
-                                    style={{
-                                        display: 'flex', alignItems: 'center', gap: 8,
-                                        padding: '9px 18px',
-                                        borderRadius: 10,
-                                        border: `1.5px solid ${form.source === s.value ? 'var(--accent)' : 'var(--border)'}`,
-                                        background: form.source === s.value ? 'var(--accent-light)' : 'var(--bg-input)',
-                                        color: form.source === s.value ? 'var(--accent)' : 'var(--text-secondary)',
-                                        fontSize: 13, fontWeight: 600, cursor: 'pointer',
-                                        transition: 'all 0.18s',
-                                    }}
-                                >
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                        <span style={{ display: 'flex' }}>{s.icon}</span>
-                                        {s.label}
-                                    </div>
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* ── Customer & Project ── */}
-                    <div className="card" style={{ padding: '20px 24px' }}>
-                        <div className="card-title" style={{ marginBottom: 16 }}>
-                            <span style={{ marginRight: 10, color: 'var(--accent)', display: 'flex' }}>{ICON_BUILDING}</span> Customer & Project
-                        </div>
-                        <div className="form-grid">
-                            <div className="form-group">
-                                <label className="form-label">Customer <span>*</span></label>
-                                <select className="input" value={form.customer_id}
-                                    onChange={e => { set('customer_id', e.target.value); set('project_id', '') }} required>
-                                    <option value="">Select customer…</option>
-                                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                </select>
+                    {!isEditMode && (
+                        <div className="card" style={{ padding: '20px 24px' }}>
+                            <div className="card-title" style={{ marginBottom: 14 }}>
+                                <span style={{ marginRight: 8 }}>📡</span> Ticket Source
                             </div>
-                            <div className="form-group">
-                                <label className="form-label">Project <span>*</span></label>
-                                <select className="input" value={form.project_id}
-                                    onChange={e => set('project_id', e.target.value)} required disabled={!form.customer_id}>
-                                    <option value="">{form.customer_id ? 'Select project…' : 'Select customer first'}</option>
-                                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                                </select>
+                            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                                {SOURCES.map(source => (
+                                    <button
+                                        key={source.value}
+                                        type="button"
+                                        onClick={() => setField('source', source.value)}
+                                        style={{
+                                            display: 'flex', alignItems: 'center', gap: 8,
+                                            padding: '9px 18px',
+                                            borderRadius: 10,
+                                            border: `1.5px solid ${form.source === source.value ? 'var(--accent)' : 'var(--border)'}`,
+                                            background: form.source === source.value ? 'var(--accent-light)' : 'var(--bg-input)',
+                                            color: form.source === source.value ? 'var(--accent)' : 'var(--text-secondary)',
+                                            fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                                            transition: 'all 0.18s',
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                            <span style={{ display: 'flex' }}>{source.icon}</span>
+                                            {source.label}
+                                        </div>
+                                    </button>
+                                ))}
                             </div>
                         </div>
-                    </div>
+                    )}
 
-                    {/* ── Category & Priority ── */}
+                    {!isEditMode ? (
+                        <div className="card" style={{ padding: '20px 24px' }}>
+                            <div className="card-title" style={{ marginBottom: 16 }}>
+                                <span style={{ marginRight: 10, color: 'var(--accent)', display: 'flex' }}>{ICON_BUILDING}</span> Customer & Project
+                            </div>
+                            <div className="form-grid">
+                                <div className="form-group">
+                                    <label className="form-label">Customer <span>*</span></label>
+                                    <select
+                                        className="input"
+                                        value={form.customer_id}
+                                        onChange={event => {
+                                            setField('customer_id', event.target.value)
+                                            setField('project_id', '')
+                                        }}
+                                        required
+                                    >
+                                        <option value="">Select customer…</option>
+                                        {customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
+                                    </select>
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Project <span>*</span></label>
+                                    <select
+                                        className="input"
+                                        value={form.project_id}
+                                        onChange={event => setField('project_id', event.target.value)}
+                                        required
+                                        disabled={!form.customer_id}
+                                    >
+                                        <option value="">{form.customer_id ? 'Select project…' : 'Select customer first'}</option>
+                                        {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="card" style={{ padding: '20px 24px' }}>
+                            <div className="card-title" style={{ marginBottom: 16 }}>
+                                <span style={{ marginRight: 10, color: 'var(--accent)', display: 'flex' }}>{ICON_BUILDING}</span> Ticket Context
+                            </div>
+                            <div className="form-grid">
+                                <div className="form-group">
+                                    <label className="form-label">Customer</label>
+                                    <input className="input" value={currentCustomer?.name || 'No customer'} readOnly />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Project</label>
+                                    <input className="input" value={currentProject?.name || 'No project mapped'} readOnly />
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="card" style={{ padding: '20px 24px' }}>
                         <div className="card-title" style={{ marginBottom: 16 }}>
                             <span style={{ marginRight: 10, color: 'var(--accent)', display: 'flex' }}>{ICON_TAG}</span> Classification
@@ -194,26 +329,23 @@ export default function TicketForm() {
                         <div className="form-grid" style={{ marginBottom: 16 }}>
                             <div className="form-group">
                                 <label className="form-label">Category <span>*</span></label>
-                                <select className="input" value={form.category} 
-                                    onChange={e => set('category', e.target.value)} required>
+                                <select className="input" value={form.category} onChange={event => setField('category', event.target.value)} required>
                                     <option value="">Select category…</option>
-                                    {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                                    {categories.map(category => <option key={category.id} value={category.name}>{category.name}</option>)}
                                 </select>
                             </div>
                             <div className="form-group">
                                 <label className="form-label">Priority <span>*</span></label>
-                                <select className="input" value={form.priority} onChange={e => set('priority', e.target.value)} required>
+                                <select className="input" value={form.priority} onChange={event => setField('priority', event.target.value)} required>
                                     {priorities
-                                        .filter(p => !form.category || p.category === form.category)
-                                        .map(p => (
-                                            <option key={p.name} value={p.name}>{p.name}</option>
-                                        ))
-                                    }
+                                        .filter(priority => !form.category || priority.category === form.category)
+                                        .map(priority => (
+                                            <option key={priority.name} value={priority.name}>{priority.name}</option>
+                                        ))}
                                 </select>
                             </div>
                         </div>
 
-                        {/* Priority SLA indicator bar */}
                         <div style={{
                             display: 'flex', alignItems: 'center', gap: 14,
                             background: 'var(--bg-input)', borderRadius: 10,
@@ -227,8 +359,8 @@ export default function TicketForm() {
                             <span style={{
                                 display: 'inline-flex', alignItems: 'center', gap: 6,
                                 padding: '3px 10px', borderRadius: 6, fontSize: 12, fontWeight: 700,
-                                background: `${getPriorityColor(form.priority, priorities)}20`, 
-                                color: getPriorityColor(form.priority, priorities), 
+                                background: `${getPriorityColor(form.priority, priorities)}20`,
+                                color: getPriorityColor(form.priority, priorities),
                                 border: `1px solid ${getPriorityColor(form.priority, priorities)}40`
                             }}>{form.priority}</span>
                             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
@@ -237,7 +369,6 @@ export default function TicketForm() {
                         </div>
                     </div>
 
-                    {/* ── Description ── */}
                     <div className="card" style={{ padding: '20px 24px' }}>
                         <div className="card-title" style={{ marginBottom: 16 }}>
                             <span style={{ marginRight: 10, color: 'var(--accent)', display: 'flex' }}>{ICON_FILETEXT}</span> Issue Description
@@ -247,15 +378,14 @@ export default function TicketForm() {
                             <textarea
                                 className="input"
                                 rows={5}
-                                placeholder="Describe the issue in detail — include error messages, steps to reproduce, and any relevant details…"
+                                placeholder="Describe the issue in detail - include error messages, steps to reproduce, and relevant notes."
                                 value={form.description}
-                                onChange={e => set('description', e.target.value)}
+                                onChange={event => setField('description', event.target.value)}
                                 required
                             />
                         </div>
                     </div>
 
-                    {/* ── Assignment, Queue & Attachment ── */}
                     <div className="card" style={{ padding: '20px 24px' }}>
                         <div className="card-title" style={{ marginBottom: 16 }}>
                             <span style={{ marginRight: 10, color: 'var(--accent)', display: 'flex' }}>{ICON_USER_SEC}</span> Assignment & Routing
@@ -263,9 +393,9 @@ export default function TicketForm() {
                         <div className="form-grid" style={{ marginBottom: 20 }}>
                             <div className="form-group">
                                 <label className="form-label">Assign To</label>
-                                <select className="input" value={form.assigned_to} onChange={e => set('assigned_to', e.target.value)}>
+                                <select className="input" value={form.assigned_to} onChange={event => setField('assigned_to', event.target.value)}>
                                     <option value="">Auto-assign (System)</option>
-                                    {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                                    {users.map(user => <option key={user.id} value={user.id}>{user.name} ({user.role})</option>)}
                                 </select>
                                 <div className="form-hint">Leave blank for automatic smart-routing</div>
                             </div>
@@ -273,23 +403,35 @@ export default function TicketForm() {
                                 <label className="form-label">Service Queue</label>
                                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     <div style={{ color: 'var(--accent)', display: 'flex' }}>{ICON_LAYERS}</div>
-                                    <select className="input" value={form.queue_id} onChange={e => set('queue_id', e.target.value)}>
+                                    <select className="input" value={form.queue_id} onChange={event => setField('queue_id', event.target.value)}>
                                         <option value="">No Queue (Unassigned Routing)</option>
-                                        {queues.map(q => <option key={q.id} value={q.id}>{q.name} ({q.sla_hours}h SLA)</option>)}
+                                        {queues.map(queue => <option key={queue.id} value={queue.id}>{queue.name} ({queue.sla_hours}h SLA)</option>)}
                                     </select>
                                 </div>
-                                <div className="form-hint">Tickets will be routed to this queue's agents</div>
+                                <div className="form-hint">Tickets will be routed to this queue&apos;s agents</div>
                             </div>
                         </div>
 
+                        {isEditMode && (
+                            <div className="form-group" style={{ marginBottom: 20 }}>
+                                <label className="form-label">Status</label>
+                                <select className="input" value={form.status} onChange={event => setField('status', event.target.value)}>
+                                    {STATUS_OPTIONS.map(status => (
+                                        <option key={status} value={status}>{status.replace('_', ' ')}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+
                         <div className="form-group">
                             <label className="form-label">Attachment</label>
-                            <div style={{
-                                border: '2px dashed var(--border)', borderRadius: 10,
-                                padding: '14px 16px', background: 'var(--bg-input)',
-                                display: 'flex', flexDirection: 'column', gap: 6,
-                                cursor: 'pointer', transition: 'border-color 0.18s'
-                            }}
+                            <div
+                                style={{
+                                    border: '2px dashed var(--border)', borderRadius: 10,
+                                    padding: '14px 16px', background: 'var(--bg-input)',
+                                    display: 'flex', flexDirection: 'column', gap: 6,
+                                    cursor: 'pointer', transition: 'border-color 0.18s'
+                                }}
                                 onClick={() => document.getElementById('tf-file').click()}
                             >
                                 <div style={{ fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -304,15 +446,14 @@ export default function TicketForm() {
                                     id="tf-file"
                                     type="file"
                                     style={{ display: 'none' }}
-                                    onChange={e => setFile(e.target.files[0])}
+                                    onChange={event => setFile(event.target.files[0])}
                                     accept=".jpg,.jpeg,.png,.pdf,.doc,.docx,.txt,.xlsx,.csv"
                                 />
                             </div>
-                            <div className="form-hint">Max 10MB · JPG, PNG, PDF, DOC, XLS, TXT</div>
+                            <div className="form-hint">Max 10MB - JPG, PNG, PDF, DOC, XLS, TXT</div>
                         </div>
                     </div>
 
-                    {/* ── Submit ── */}
                     <div style={{ display: 'flex', gap: 12, alignItems: 'center', paddingBottom: 8 }}>
                         <button
                             className="btn btn-primary"
@@ -321,18 +462,14 @@ export default function TicketForm() {
                             style={{ minWidth: 160, justifyContent: 'center' }}
                         >
                             {loading
-                                ? <><span className="spinner" style={{ width: 14, height: 14 }} />Creating…</>
-                                : <>
-                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12l7 7 7-7" /></svg>
-                                    Create Ticket
-                                </>
+                                ? <><span className="spinner" style={{ width: 14, height: 14 }} />{isEditMode ? 'Saving...' : 'Creating...'}</>
+                                : <>{isEditMode ? 'Save Ticket' : 'Create Ticket'}</>
                             }
                         </button>
-                        <button className="btn btn-secondary" type="button" onClick={() => navigate('/tickets')}>
+                        <button className="btn btn-secondary" type="button" onClick={() => navigate(isEditMode ? `/tickets/${id}` : '/tickets')}>
                             Cancel
                         </button>
                     </div>
-
                 </form>
             </div>
         </>

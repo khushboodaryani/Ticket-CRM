@@ -1,6 +1,6 @@
 // src/pages/Monitoring/CommandCenter.jsx
 import { useState, useEffect } from 'react';
-import { useSocket } from '../../context/SocketContext';
+import { useSocket } from '../../hooks/useSocket';
 import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import Topbar from '../../components/Layout/Topbar';

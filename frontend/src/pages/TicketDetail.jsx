@@ -4,7 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
-import { useSocket } from '../context/SocketContext'
+import { useSocket } from '../hooks/useSocket'
 import toast from 'react-hot-toast'
 import CountdownBadge from '../components/Tickets/CountdownBadge'
 
@@ -280,6 +280,7 @@ export default function TicketDetail() {
                 subtitle={`${ticket.customer_name} › ${ticket.project_name}`}
                 actions={
                     <div className="btn-row">
+                        <button className="btn btn-secondary btn-sm" onClick={() => navigate(`/tickets/${id}/edit`)}>Edit</button>
                         {isOverdue && <span className="badge" style={{ background: '#fee2e2', color: '#ef4444', display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
                             {ICON_ALERT} Overdue
                         </span>}

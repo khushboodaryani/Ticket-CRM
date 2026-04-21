@@ -871,7 +871,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             return;
         }
 
-        const { customerId, customerName: resolvedCustomerName, matchType: domainMatchType } = domainResolution;
+        const { customerId, customerName: resolvedCustomerName, matchType: domainMatchType, queueId: resolvedQueueId } = domainResolution;
         let { projectId: resolvedProjectId } = domainResolution;
 
         logger.info(`[EmailPoller] Domain resolved: type=${domainMatchType} customer=${customerId} project=${resolvedProjectId}`);
@@ -906,12 +906,13 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         const resolvedTz = await resolveTicketTimezone(pool, { customerId, projectId: resolvedProjectId });
         const slaPolicy = await resolveSlaPolicy(pool, { customerId, projectId: resolvedProjectId, priorityId });
         const calendar = await getSlaCalendar(pool);
+        const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone || TZ };
         const calculator = new SlaCalculator(pool);
         
         const nowStr = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
-        const strMoment = calculator.computeDueDate(nowStr, slaPolicy.first_response_hrs, calendar);
+        const strMoment = calculator.computeDueDate(nowStr, slaPolicy.first_response_hrs, calendarForTicket);
         const str = strMoment.format('YYYY-MM-DD HH:mm:ss');
-        const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendar);
+        const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendarForTicket);
         const etr = etrMoment.format('YYYY-MM-DD HH:mm:ss');
 
         const ticketNumber = await generateTicketNumber(pool, priorityId);
@@ -924,7 +925,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             )
             VALUES (?,?,?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, NULL, 'email', 'auto', ?, ?, ?)`,
             [
-                ticketNumber, rawSubject.slice(0, 500), customerId, resolvedProjectId, null, cleanSubject.slice(0, 250), 
+                ticketNumber, rawSubject.slice(0, 500), customerId, resolvedProjectId, resolvedQueueId || null, cleanSubject.slice(0, 250), 
                 priorityName, priorityId, description, str, etr, systemUserId,
                 resolvedTz, slaPolicy.id, slaPolicy.version
             ]
@@ -981,7 +982,8 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                 category: cleanSubject.slice(0, 250), 
                 priority: finalPriority, 
                 status: 'open', 
-                source: 'email' 
+                source: 'email',
+                queue_id: resolvedQueueId || null
             }
         });
         

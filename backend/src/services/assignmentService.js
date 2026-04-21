@@ -60,7 +60,7 @@ export const getShiftAssignee = async (queueId = null, priority = 'P3') => {
             query += ` JOIN queue_agents qa ON qa.user_id = u.id `;
         }
         
-        query += ` WHERE sm.shift_id IN (?) AND u.role = 'agent' AND u.is_active = 1 `;
+        query += ` WHERE sm.shift_id IN (?) AND u.role IN ('agent', 'tl') AND u.is_active = 1 `;
         
         if (queueId) {
             query += ` AND qa.queue_id = ? `;

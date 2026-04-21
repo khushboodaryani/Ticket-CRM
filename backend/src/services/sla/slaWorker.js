@@ -4,6 +4,7 @@ import redis from '../../config/redis.js';
 import { logger } from '../../logger.js';
 import connectDB from '../../db/index.js';
 import { jobManager } from './jobManager.js';
+import { sendSlaBreachNotification } from '../../modules/notifications/emailService.js';
 
 export const startSlaWorker = () => {
     const worker = new Worker('slaQueue', async (job) => {
@@ -15,8 +16,11 @@ export const startSlaWorker = () => {
         try {
             // 1. Fetch current ticket status
             const [rows] = await pool.query(
-                `SELECT t.*, c.name as customer_name FROM tickets t 
+                `SELECT t.*, c.name as customer_name, c.email as customer_email,
+                        u.name as assigned_to_name
+                 FROM tickets t 
                  LEFT JOIN customers c ON t.customer_id = c.id
+                 LEFT JOIN users u ON t.assigned_to = u.id
                  WHERE t.id = ?`, 
                 [ticketId]
             );
@@ -89,6 +93,13 @@ async function handleBreach(pool, ticket) {
         `INSERT INTO ticket_activities (ticket_id, action, note) VALUES (?, 'auto_escalated', 'SLA BREACHED: Ticket moved to critical status.')`,
         [ticket.id]
     );
+
+    // Trigger Customer Notification
+    if (ticket.customer_email) {
+        sendSlaBreachNotification(ticket, ticket.customer_email).catch(err => 
+            logger.error(`[SLA-Breach] Failed to send customer notification: ${err.message}`)
+        );
+    }
 }
 
 async function handleFirstResponseBreach(pool, ticket) {

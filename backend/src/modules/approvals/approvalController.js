@@ -236,25 +236,27 @@ export const approveDomain = async (req, res) => {
                 const priorityId = prioRows[0]?.id;
                 
                 const slaPolicy = await resolveSlaPolicy(conn, { customerId: customer_id, projectId: effectiveProjectId, priorityId });
+                const resolvedTz = await resolveTicketTimezone(conn, { customerId: customer_id, projectId: effectiveProjectId });
                 const calendar = await getSlaCalendar(conn);
+                const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone || TZ };
                 const calculator = new SlaCalculator(conn);
                 
-                const nowStr = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
-                const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendar);
+                const nowStr = moment().tz(resolvedTz || TZ).format('YYYY-MM-DD HH:mm:ss');
+                const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendarForTicket);
                 const etr = etrMoment.format('YYYY-MM-DD HH:mm:ss');
 
                 let assigneeId = null;
-                try { assigneeId = await getShiftAssignee(priority); } catch (_) {}
+                try { assigneeId = await getShiftAssignee(null, priority); } catch (_) {}
 
                 // Create ticket
                 const [tResult] = await conn.query(
-                    `INSERT INTO tickets (ticket_number, subject, customer_id, project_id, category, priority_id, description, 
+                    `INSERT INTO tickets (ticket_number, subject, customer_id, project_id, category, priority, priority_id, description, 
                      status, escalation_level, sla_state, str, etr, created_by, assigned_to, source,
                      resolved_timezone, sla_policy_id, sla_version)
-                     VALUES (?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, ?, 'email', ?, ?, ?)`,
+                     VALUES (?,?,?,?,?,?,?, ?, 'open', 1, 'active', ?, ?, ?, ?, 'email', ?, ?, ?)`,
                     [ticketNumber, rawSubject.slice(0, 500), customer_id, effectiveProjectId,
-                     cleanSubject.slice(0, 250), priorityId, description, nowStr, etr, systemUserId, assigneeId,
-                     TZ, slaPolicy.id, slaPolicy.version]
+                     cleanSubject.slice(0, 250), priority, priorityId, description, nowStr, etr, systemUserId, assigneeId,
+                     resolvedTz, slaPolicy.id, slaPolicy.version]
                 );
                 const ticketId = tResult.insertId;
 

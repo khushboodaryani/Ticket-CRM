@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import api from '../api/axios'
 import Topbar from '../components/Layout/Topbar'
 import { useAuth } from '../context/AuthContext'
-import { useSocket } from '../context/SocketContext'
+import { useSocket } from '../hooks/useSocket'
 import toast from 'react-hot-toast'
 import CountdownBadge from '../components/Tickets/CountdownBadge'
 

@@ -1,6 +1,7 @@
 // modules/customers/domainController.js
 // CRUD for customer_domains — maps email domains to customers/projects
 import connectDB from "../../db/index.js";
+import { resolveCustomerByDomain } from "../../services/emailPoller.js";
 
 // GET /api/domains — list all domain mappings (admin overview)
 export const getAllDomains = async (req, res) => {
@@ -218,5 +219,60 @@ export const deleteDomain = async (req, res) => {
     } catch (err) {
         console.error("deleteDomain:", err);
         return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// GET /api/domains/check — diagnostic tool to test how a domain will be handled
+export const checkDomainIngestion = async (req, res) => {
+    try {
+        const { email } = req.query;
+        if (!email) return res.status(400).json({ success: false, message: "Email is required." });
+
+        const pool = connectDB();
+        const conn = await pool.getConnection();
+
+        try {
+            // Simulate the core ingestion logic
+            const result = await resolveCustomerByDomain(
+                conn, pool, email.trim(), "Test User", "Subject", "Body", "msg-test-123"
+            );
+
+            const domain = email.split('@')[1]?.toLowerCase();
+            const PUBLIC_DOMAINS = new Set([
+                'gmail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com',
+                'live.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
+                'protonmail.com', 'proton.me', 'zoho.com', 'zoho.in',
+                'yandex.com', 'mail.com', 'gmx.com', 'gmx.net',
+                'rediffmail.com', 'msn.com', 'mail.ru',
+                'googlemail.com', 'fastmail.com', 'tutanota.com',
+            ]);
+
+            const isPublic = PUBLIC_DOMAINS.has(domain);
+
+            if (result) {
+                return res.json({
+                    success: true,
+                    decision: "AUTO-ONBOARD",
+                    match_type: result.matchType,
+                    mapped_customer: result.customerName,
+                    mapped_project_id: result.projectId,
+                    domain_status: isPublic ? "Public (Bypassed due to manual mapping)" : "Private (Approved)",
+                    logic: `This domain is explicitly mapped. It will bypass the 'Held Email' queue.`
+                });
+            } else {
+                return res.json({
+                    success: true,
+                    decision: "HOLD FOR APPROVAL",
+                    domain_status: isPublic ? "Public (Held for safety)" : "Unknown Domain",
+                    logic: `This domain is NOT in your customer_domains table. Emails from this sender will go to your 'Pending Approvals' list.`
+                });
+            }
+        } finally {
+            conn.release();
+        }
+
+    } catch (err) {
+        console.error("checkDomainIngestion:", err);
+        return res.status(500).json({ success: false, message: "Diagnostic tool failed." });
     }
 };

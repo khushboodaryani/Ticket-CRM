@@ -20,7 +20,7 @@ router.use(authenticateToken);
 
 router.get("/", requireRole("superadmin", "manager"), getSLAPolicies);
 router.get("/priorities", requireRole("superadmin", "manager", "tl", "agent"), getConfiguredPriorityList);
-router.get("/categories", requireRole("superadmin", "manager"), getPriorityCategories);
+router.get("/categories", requireRole("superadmin", "gm", "manager", "tl", "agent"), getPriorityCategories);
 router.get("/customer/:customerId", requireRole("superadmin", "manager"), getCustomerSLAPolicies);
 router.post("/customer/:customerId", requireRole("superadmin", "manager"), updateCustomerSLAPolicy);
 router.get("/calendar", requireRole("superadmin", "manager"), getSLACalendar);

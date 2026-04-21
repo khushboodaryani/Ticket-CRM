@@ -55,9 +55,10 @@ export const handleInbound = async (payload) => {
             const resolvedTz = await resolveTicketTimezone(pool, { customerId });
             const slaPolicy = await resolveSlaPolicy(pool, { customerId, priorityId });
             const calendar = await getSlaCalendar(pool);
+            const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone || 'Asia/Kolkata' };
             const calculator = new SlaCalculator(pool);
             const now = moment().tz(resolvedTz || 'Asia/Kolkata').format("YYYY-MM-DD HH:mm:ss");
-            const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendar);
+            const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendarForTicket);
             const etr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
 
             // 3. Dynamic Numbering
@@ -69,12 +70,12 @@ export const handleInbound = async (payload) => {
 
             const [newTicket] = await pool.query(
                 `INSERT INTO tickets (
-                    ticket_number, customer_id, project_id, category, priority_id, description, source, etr, 
+                    ticket_number, customer_id, project_id, category, priority, priority_id, description, source, etr, 
                     str, created_by, sla_policy_id, sla_version, resolved_timezone
                 ) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
                 [
-                    ticketNumber, customerId, projectId, 'Inquiry', priorityId, body.substring(0, 500), channel, etr, 
+                    ticketNumber, customerId, projectId, 'Inquiry', 'P3', priorityId, body.substring(0, 500), channel, etr, 
                     now, slaPolicy.id, slaPolicy.version, resolvedTz
                 ]
             );

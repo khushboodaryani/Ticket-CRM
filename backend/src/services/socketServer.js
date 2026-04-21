@@ -69,7 +69,10 @@ export const initSocket = (server) => {
             if (userId) {
                 try {
                     const pool = connectDB();
-                    await pool.query("UPDATE users SET last_heartbeat = NOW() WHERE id = ?", [userId]);
+                    await pool.query(
+                        "UPDATE users SET last_heartbeat = NOW(), status_source = 'system' WHERE id = ?", 
+                        [userId]
+                    );
                 } catch (err) { /* silent fail */ }
             }
         });
@@ -102,12 +105,24 @@ export const initSocket = (server) => {
         try {
             const pool = connectDB();
             // Mark agents as Offline (System) if they haven't sent a heartbeat in 90s
+            // 1. Clean up stale SYSTEM presence (90 seconds)
             await pool.query(
                 `UPDATE users 
                  SET is_online = 0, status = 'offline', status_source = 'system' 
                  WHERE is_online = 1 
-                 AND last_heartbeat < (NOW() - INTERVAL 90 SECOND)
-                 AND role != 'superadmin'` // Optional: keep superadmins online?
+                   AND status_source = 'system'
+                   AND (last_heartbeat < (NOW() - INTERVAL 90 SECOND) OR last_heartbeat IS NULL)
+                   AND role != 'superadmin'`
+            );
+
+            // 2. Safety Valve: Clean up stale MANUAL presence (10 minutes)
+            await pool.query(
+                `UPDATE users 
+                 SET is_online = 0, status = 'offline', status_source = 'system' 
+                 WHERE is_online = 1 
+                   AND status_source = 'manual'
+                   AND (last_heartbeat < (NOW() - INTERVAL 10 MINUTE) OR last_heartbeat IS NULL)
+                   AND role != 'superadmin'`
             );
         } catch (err) {
             logger.error(`[PresenceWorker] Error: ${err.message}`);

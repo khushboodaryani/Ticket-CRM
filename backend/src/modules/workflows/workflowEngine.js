@@ -20,6 +20,14 @@ export const initWorkflowEngine = () => {
         } catch (err) {
             logger.error(`❌ Workflow Engine Error:`, err.message);
         }
+
+        // GUARANTEED Step 7: Always send acknowledgment, even if workflow failed
+        // This runs AFTER the pipeline completes (success or failure)
+        try {
+            await handleTicketCreatedNotification({ ticketId: data.ticketId });
+        } catch (notifErr) {
+            logger.error(`❌ Acknowledgment notification failed for Ticket #${data.ticketId}: ${notifErr.message}`);
+        }
     });
 
     workflowEvents.on('status_changed', async (data) => {
@@ -34,35 +42,36 @@ export const initWorkflowEngine = () => {
 /**
  * 8-Step Enterprise Pipeline Orchestrator
  */
-async function processEnterpriseWorkflow(trigger, data) {
+export async function processEnterpriseWorkflow(trigger, data) {
     const pool = connectDB();
     const { ticketId, payload } = data;
     const lockName = `ticket_workflow_${ticketId}`;
 
     let conn;
     try {
+        conn = await pool.getConnection();
+
         // Step 3a: Acquire Lock (Prevent Race Conditions)
-        const [lockResult] = await pool.query("SELECT GET_LOCK(?, 10) as locked", [lockName]);
+        const [lockResult] = await conn.query("SELECT GET_LOCK(?, 10) as locked", [lockName]);
         if (!lockResult[0].locked) {
             logger.warn(`[Workflow] Could not acquire lock for ticket ${ticketId}. Skipping.`);
             return;
         }
 
         // Step 3b: Check Idempotency
-        const [ticketRows] = await pool.query(
-            "SELECT id, workflow_processed, project_id, customer_id, priority, queue_id, assignment_source FROM tickets WHERE id = ?",
+        const [ticketRows] = await conn.query(
+            "SELECT id, workflow_processed, project_id, customer_id, priority, priority_id, queue_id, assignment_source FROM tickets WHERE id = ?",
             [ticketId]
         );
         const ticket = ticketRows[0];
 
         if (!ticket || ticket.workflow_processed) {
             logger.info(`[Workflow] Ticket ${ticketId} already processed or missing. Standing down.`);
-            await pool.query("SELECT RELEASE_LOCK(?)", [lockName]);
             return;
         }
 
         // Step 3c: Fetch Rules Deterministically
-        const [rules] = await pool.query(
+        const [rules] = await conn.query(
             "SELECT * FROM workflow_rules WHERE trigger_event = ? AND is_active = 1 ORDER BY priority DESC, id ASC",
             [trigger]
         );
@@ -70,19 +79,28 @@ async function processEnterpriseWorkflow(trigger, data) {
         // Step 3d: Pick FIRST MATCH Only
         let matchedRule = null;
         for (const rule of rules) {
-            if (evaluateConditions(rule.conditions, payload)) {
+            // Defensive Parsing: Ensure conditions/actions are objects
+            let parsedConditions = rule.conditions;
+            if (typeof parsedConditions === 'string') {
+                try { parsedConditions = JSON.parse(parsedConditions); } catch { parsedConditions = {}; }
+            }
+
+            if (evaluateConditions(parsedConditions, payload)) {
                 matchedRule = rule;
+                // Parse actions too for Step 4
+                if (typeof matchedRule.actions === 'string') {
+                    try { matchedRule.actions = JSON.parse(matchedRule.actions); } catch { matchedRule.actions = []; }
+                }
                 break; 
             }
         }
 
         // Step 4: Transactional Apply
-        conn = await pool.getConnection();
         await conn.beginTransaction();
 
-        let finalPriority = ticket.priority;
-        let finalQueueId = ticket.queue_id;
-        let finalStatus = 'open';
+        let finalPriority = payload.priority || ticket.priority;
+        let finalQueueId = payload.queue_id ?? ticket.queue_id;
+        let finalStatus = payload.status || 'open';
         let runLogs = [];
 
         if (matchedRule) {
@@ -133,9 +151,11 @@ async function processEnterpriseWorkflow(trigger, data) {
         });
 
         const calendar = await getSlaCalendar(conn);
+        const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone };
         const calculator = new SlaCalculator(conn);
-        const etrMoment = calculator.computeDueDate(new Date(), slaPolicy.resolution_hrs, calendar);
-        const strMoment = calculator.computeDueDate(new Date(), slaPolicy.first_response_hrs, calendar);
+        const now = new Date();
+        const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendarForTicket);
+        const strMoment = calculator.computeDueDate(now, slaPolicy.first_response_hrs, calendarForTicket);
         const finalEtr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
         const finalStr = strMoment.format('YYYY-MM-DD HH:mm:ss');
 
@@ -160,7 +180,7 @@ async function processEnterpriseWorkflow(trigger, data) {
 
         // Step 4e: Schedule Jobs
         const { jobManager } = await import("../../services/sla/jobManager.js");
-        await jobManager.scheduleJobs({ id: ticketId, etr: finalEtr, resolved_timezone: resolvedTz }, calendar);
+        await jobManager.scheduleJobs({ id: ticketId, etr: finalEtr, resolved_timezone: resolvedTz }, calendarForTicket);
 
         // Step 4e: Rich Activity Trace (for UI visibility)
         const traceNote = matchedRule 
@@ -195,24 +215,45 @@ async function processEnterpriseWorkflow(trigger, data) {
                         [ticketId, `Auto-assigned via Enterprise Pipeline (Queue: ${finalQueueId})`]
                     );
                     logger.info(`👤 Auto-assigned Ticket #${ticketId} to agent ${assigneeId}`);
+
+                    // Step 6b: Notify customer about assignment (non-blocking)
+                    try {
+                        const [agentRow] = await pool.query("SELECT name FROM users WHERE id = ?", [assigneeId]);
+                        const [ticketRow] = await pool.query(
+                            `SELECT t.*, c.email as customer_email FROM tickets t LEFT JOIN customers c ON t.customer_id = c.id WHERE t.id = ?`,
+                            [ticketId]
+                        );
+                        if (agentRow.length && ticketRow.length && ticketRow[0].customer_email) {
+                            const { sendTicketAssignedNotification } = await import("../notifications/emailService.js");
+                            sendTicketAssignedNotification(ticketRow[0], ticketRow[0].customer_email, agentRow[0].name)
+                                .catch(e => logger.error(`❌ Assignment email failed (non-blocking): ${e.message}`));
+                        }
+                    } catch (notifErr) {
+                        logger.error(`❌ Assignment notification lookup failed: ${notifErr.message}`);
+                    }
                 }
             } catch (assignErr) {
                 logger.error(`❌ Auto-assignment failed: ${assignErr.message}`);
             }
         }
 
-        // Step 7: Notification Engine
-        await handleTicketCreatedNotification({ ticketId });
+        // Step 7: Acknowledgment is now handled by the event listener (GUARANTEED)
+        // Removed from here to prevent double-sending.
 
         // Final Release Lock
-        await pool.query("SELECT RELEASE_LOCK(?)", [lockName]);
-
     } catch (err) {
         if (conn) await conn.rollback();
         logger.error(`❌ Enterprise Pipeline Failed for Ticket #${ticketId}:`, err.message);
         throw err;
     } finally {
-        if (conn) conn.release();
+        if (conn) {
+            try {
+                await conn.query("SELECT RELEASE_LOCK(?)", [lockName]);
+            } catch (releaseErr) {
+                logger.warn(`[Workflow] Failed to release lock for ticket ${ticketId}: ${releaseErr.message}`);
+            }
+            conn.release();
+        }
     }
 }
 

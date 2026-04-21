@@ -1,6 +1,6 @@
 // src/pages/Monitoring/AgentsDashboard.jsx
 import { useState, useEffect } from 'react';
-import { useSocket } from '../../context/SocketContext';
+import { useSocket } from '../../hooks/useSocket';
 import { useNavigate } from 'react-router-dom';
 import Topbar from '../../components/Layout/Topbar';
 import DashboardStatus from '../../components/Shared/DashboardStatus';

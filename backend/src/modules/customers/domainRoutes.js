@@ -1,10 +1,19 @@
-// modules/customers/domainRoutes.js
 import { Router } from "express";
 import { authenticateToken, requireRole } from "../../middlewares/auth.js";
-import { getAllDomains, getCustomerDomains, addCustomerDomain, updateDomain, deleteDomain } from "./domainController.js";
+import { 
+    getAllDomains, 
+    getCustomerDomains, 
+    addCustomerDomain, 
+    updateDomain, 
+    deleteDomain,
+    checkDomainIngestion 
+} from "./domainController.js";
 
 const router = Router();
 router.use(authenticateToken);
+
+// Diagnostic tool
+router.get("/check", requireRole("superadmin", "gm", "manager"), checkDomainIngestion);
 
 // Admin overview — all domains
 router.get("/", requireRole("superadmin", "gm", "manager"), getAllDomains);

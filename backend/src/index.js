@@ -11,6 +11,7 @@ dotenv.config({ path: './.env' });
 import { app } from "./app.js";
 import connectDB from "./db/index.js";
 import { startSlaWorker } from "./services/sla/slaWorker.js";
+import { startSLAEngine } from "./modules/sla/slaEngine.js";
 import { initWorkflowEngine } from "./modules/workflows/workflowEngine.js";
 import { logger } from "./logger.js";
 import { initSocket } from "./services/socketServer.js";
@@ -65,6 +66,7 @@ const startServer = async () => {
 
         // startSlaWorker(); (Using BullMQ)
         startSlaWorker();
+        startSLAEngine();
 
         // Initialize Workflow Engine
         initWorkflowEngine();

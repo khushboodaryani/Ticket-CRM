@@ -1,6 +1,6 @@
 // src/components/Shared/DashboardStatus.jsx
 
-import { useSocket } from '../../context/SocketContext';
+import { useSocket } from '../../hooks/useSocket';
 
 export default function DashboardStatus() {
     const { status, lastSync, rehydrate } = useSocket();

@@ -4,6 +4,7 @@ import { logger } from '../../logger.js';
 import connectDB from '../../db/index.js';
 import { getConversationTrailHtml } from '../conversations/adapters/emailAdapter.js';
 import { resolveSlaPolicy } from '../sla/slaPolicyService.js';
+import { renderNotificationTemplate, TEMPLATE_KEYS } from './templateService.js';
 
 const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -17,6 +18,9 @@ const transporter = nodemailer.createTransport({
 
 const REPLY_TO_EMAIL = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim();
 const MAX_PARTICIPANT_NOTIFY = Math.max(1, parseInt(process.env.MAX_PARTICIPANT_NOTIFY || '20', 10));
+const COMPANY_NAME = process.env.COMPANY_NAME || 'Team Multycomm';
+
+const formatDisplayValue = (value, fallback = 'N/A') => value || fallback;
 
 /**
  * Log an outgoing email's message-id to email_logs to prevent poller reflection loops.
@@ -44,8 +48,12 @@ export async function buildThreadHeaders(pool, ticketId) {
         `SELECT c.root_message_id, cm.message_id as last_msg_id, cm.reference_chain
          FROM conversations c
          LEFT JOIN conversation_messages cm ON cm.conversation_id = c.id
-         WHERE c.ticket_id = ? AND c.source_channel = 'email'
-         ORDER BY cm.created_at DESC LIMIT 1`,
+         WHERE c.ticket_id = ?
+         ORDER BY
+            CASE WHEN c.source_channel = 'email' THEN 0 ELSE 1 END,
+            cm.created_at DESC,
+            c.id DESC
+         LIMIT 1`,
         [ticketId]
     );
 
@@ -122,11 +130,30 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
     };
     const responseTimeLabel = formatResponseTime(responseTimeSec);
 
+    let renderedEmail = null;
+    try {
+        renderedEmail = await renderNotificationTemplate(pool, TEMPLATE_KEYS.ACKNOWLEDGEMENT, {
+            ticket_number: formatDisplayValue(ticket.ticket_number),
+            ticket_subject: formatDisplayValue(ticket.subject || ticket.category || 'Support Request', 'Support Request'),
+            category: formatDisplayValue(ticket.category),
+            priority: formatDisplayValue(ticket.priority),
+            description_html: formattedDescription || 'No description provided.',
+            first_response_target: responseTimeLabel,
+            etr: formatDisplayValue(ticket.etr),
+            assigned_to_name: formatDisplayValue(ticket.assigned_to_name, 'Support Team'),
+            customer_name: formatDisplayValue(ticket.customer_name, 'Customer'),
+            company_name: COMPANY_NAME,
+            conversation_trail_html: trailHtml,
+        });
+    } catch (templateErr) {
+        logger.warn(`[EmailService] Failed to render acknowledgement template for ${ticket.ticket_number}: ${templateErr.message}`);
+    }
+
     const mailOptions = {
         from: `"Support Team" <${process.env.EMAIL_USER}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
-        subject: `[${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
+        subject: renderedEmail?.subject || `[${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
             'In-Reply-To': headers.inReplyTo,
@@ -134,7 +161,7 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
             'Auto-Submitted': 'auto-generated',
             'X-Auto-Response-Suppress': 'All'
         },
-        html: `
+        html: renderedEmail?.html || `
       <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
         <h2 style="color: #4f8ef7; margin-bottom: 4px;">Ticket Acknowledgement</h2>
         <p style="color: #64748b; margin-top: 0;">Your request has been received (Ticket ${ticket.ticket_number}). Our team will respond shortly.</p>
@@ -182,6 +209,186 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
 
     } catch (error) {
         logger.error(`❌ Failed to send notification email: ${error.message}`);
+    }
+};
+
+
+/**
+ * Send notification to customer when their ticket is assigned to an agent
+ */
+export const sendTicketAssignedNotification = async (ticket, customerEmail, agentName) => {
+    if (!customerEmail || !agentName) return;
+
+    const pool = connectDB();
+    let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
+    let trailHtml = '';
+    try {
+        headers = await buildThreadHeaders(pool, ticket.id);
+        if (ticket.id) trailHtml = await getConversationTrailHtml(pool, ticket.id);
+    } catch (err) {
+        logger.error(`[EmailService] Trail/header build failed for assignment notification ${ticket.ticket_number}: ${err.message}`);
+    }
+
+    let renderedEmail = null;
+    try {
+        renderedEmail = await renderNotificationTemplate(pool, TEMPLATE_KEYS.ASSIGNMENT, {
+            ticket_number: formatDisplayValue(ticket.ticket_number),
+            ticket_subject: formatDisplayValue(ticket.subject || ticket.category || 'Support Request', 'Support Request'),
+            category: formatDisplayValue(ticket.category),
+            priority: formatDisplayValue(ticket.priority),
+            description_html: '',
+            first_response_target: '',
+            etr: formatDisplayValue(ticket.etr, 'Pending'),
+            assigned_to_name: formatDisplayValue(agentName, 'Support Team'),
+            customer_name: formatDisplayValue(ticket.customer_name, 'Customer'),
+            company_name: COMPANY_NAME,
+            conversation_trail_html: trailHtml,
+        });
+    } catch (templateErr) {
+        logger.warn(`[EmailService] Failed to render assignment template for ${ticket.ticket_number}: ${templateErr.message}`);
+    }
+
+    const mailOptions = {
+        from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        replyTo: REPLY_TO_EMAIL || undefined,
+        to: customerEmail,
+        subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
+        headers: {
+            'Message-ID': headers.messageId,
+            'In-Reply-To': headers.inReplyTo,
+            'References': headers.references,
+            'Auto-Submitted': 'auto-generated',
+            'X-Auto-Response-Suppress': 'All'
+        },
+        html: renderedEmail?.html || `
+      <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
+        <h2 style="color: #4f8ef7; margin-bottom: 4px;">Agent Assigned to Your Ticket</h2>
+        <p style="color: #64748b; margin-top: 0;">Good news! Your support request has been assigned to a team member.</p>
+        <div style="background:#f0fdf4; padding: 15px; border-radius:8px; border:1px solid #bbf7d0; margin: 20px 0;">
+            <p style="margin:0; font-size:14px; color:#166534;">
+                <strong>${agentName}</strong> has been assigned to handle your ticket <strong>${ticket.ticket_number}</strong>.
+            </p>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 13px;">
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b; width:40%"><strong>Ticket Number</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Subject</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.subject || ticket.category}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Assigned To</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${agentName}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>ETR (Deadline)</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.etr || 'Pending'}</td></tr>
+        </table>
+        <p style="font-size: 13px; color: #666;">To add more details, simply reply to this email.</p>
+        ${trailHtml}
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
+        <p style="font-size: 12px; color: #999;">Regards,<br/><strong>Team Multycomm</strong></p>
+      </div>
+    `
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        logger.info(`📧 Assignment notification sent to ${customerEmail} for ${ticket.ticket_number} (Agent: ${agentName})`);
+        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
+        try {
+            const [conv] = await pool.query('SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1', [ticket.id]);
+            if (conv.length) {
+                await pool.query(
+                    `INSERT INTO conversation_messages (conversation_id, sender_type, sender_name, message_body, message_id, in_reply_to, reference_chain)
+                     VALUES (?, 'system', 'Support Team', ?, ?, ?, ?)`,
+                    [conv[0].id, `Ticket assigned to ${agentName}`, headers.messageId.replace(/[<>]/g, '').trim(), headers.inReplyTo, headers.references]
+                );
+            }
+        } catch (dbErr) { logger.warn(`[EmailService] Failed to record assignment in trail: ${dbErr.message}`); }
+    } catch (error) {
+        logger.error(`❌ Failed to send assignment notification: ${error.message}`);
+    }
+};
+
+/**
+ * Send notification to customer when their ticket's SLA has been breached
+ */
+export const sendSlaBreachNotification = async (ticket, customerEmail) => {
+    if (!customerEmail) return;
+
+    const pool = connectDB();
+    let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
+    let trailHtml = '';
+    try {
+        headers = await buildThreadHeaders(pool, ticket.id);
+        if (ticket.id) trailHtml = await getConversationTrailHtml(pool, ticket.id);
+    } catch (err) {
+        logger.error(`[EmailService] Trail/header build failed for SLA breach notification ${ticket.ticket_number}: ${err.message}`);
+    }
+
+    let renderedEmail = null;
+    try {
+        renderedEmail = await renderNotificationTemplate(pool, TEMPLATE_KEYS.SLA_BREACH, {
+            ticket_number: formatDisplayValue(ticket.ticket_number),
+            ticket_subject: formatDisplayValue(ticket.subject || ticket.category || 'Support Request', 'Support Request'),
+            category: formatDisplayValue(ticket.category),
+            priority: formatDisplayValue(ticket.priority),
+            description_html: '',
+            first_response_target: '',
+            etr: formatDisplayValue(ticket.etr),
+            assigned_to_name: formatDisplayValue(ticket.assigned_to_name || ticket.assigned_to_name_display, 'Support Team'),
+            customer_name: formatDisplayValue(ticket.customer_name, 'Customer'),
+            company_name: COMPANY_NAME,
+            conversation_trail_html: trailHtml,
+        });
+    } catch (templateErr) {
+        logger.warn(`[EmailService] Failed to render SLA breach template for ${ticket.ticket_number}: ${templateErr.message}`);
+    }
+
+    const mailOptions = {
+        from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        replyTo: REPLY_TO_EMAIL || undefined,
+        to: customerEmail,
+        subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'} - Escalated`,
+        headers: {
+            'Message-ID': headers.messageId,
+            'In-Reply-To': headers.inReplyTo,
+            'References': headers.references,
+            'Auto-Submitted': 'auto-generated',
+            'X-Auto-Response-Suppress': 'All'
+        },
+        html: renderedEmail?.html || `
+      <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 680px; margin: 0 auto;">
+        <h2 style="color: #dc2626; margin-bottom: 4px;">Ticket Escalated</h2>
+        <p style="color: #64748b; margin-top: 0;">We sincerely apologize — your support request has exceeded its expected resolution time.</p>
+        <div style="background:#fef2f2; padding: 15px; border-radius:8px; border:1px solid #fecaca; margin: 20px 0;">
+            <p style="margin:0; font-size:14px; color:#991b1b;">
+                Your ticket <strong>${ticket.ticket_number}</strong> has been automatically escalated for priority resolution.
+            </p>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 13px;">
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b; width:40%"><strong>Ticket Number</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.ticket_number}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Subject</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.subject || ticket.category}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Priority</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.priority}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Assigned To</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.assigned_to_name || 'Support Team'}</td></tr>
+          <tr><td style="padding: 8px; border-bottom: 1px solid #eee; color: #64748b;"><strong>Original Deadline</strong></td><td style="padding: 8px; border-bottom: 1px solid #eee;">${ticket.etr || 'N/A'}</td></tr>
+        </table>
+        <p style="font-size: 13px; color: #666;">We are working to resolve your issue as quickly as possible.</p>
+        ${trailHtml}
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
+        <p style="font-size: 12px; color: #999;">Regards,<br/><strong>Team Multycomm</strong></p>
+      </div>
+    `
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        logger.info(`📧 SLA breach notification sent to ${customerEmail} for ${ticket.ticket_number}`);
+        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
+        try {
+            const [conv] = await pool.query('SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1', [ticket.id]);
+            if (conv.length) {
+                await pool.query(
+                    `INSERT INTO conversation_messages (conversation_id, sender_type, sender_name, message_body, message_id, in_reply_to, reference_chain)
+                     VALUES (?, 'system', 'Support Team', ?, ?, ?, ?)`,
+                    [conv[0].id, `SLA Breached — Ticket escalated for priority resolution`, headers.messageId.replace(/[<>]/g, '').trim(), headers.inReplyTo, headers.references]
+                );
+            }
+        } catch (dbErr) { logger.warn(`[EmailService] Failed to record breach in trail: ${dbErr.message}`); }
+    } catch (error) {
+        logger.error(`❌ Failed to send SLA breach notification: ${error.message}`);
     }
 };
 

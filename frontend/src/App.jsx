@@ -24,6 +24,7 @@ import Queues from './pages/Queues'
 import WorkflowBuilder from './pages/WorkflowBuilder'
 import Analytics from './pages/Analytics'
 import SlaSettings from './pages/SlaSettings'
+import NotificationTemplates from './pages/NotificationTemplates'
 import DomainApprovals from './pages/DomainApprovals'
 import ResetPassword from './pages/ResetPassword'
 
@@ -68,6 +69,7 @@ export default function App() {
                                 <Route path="/dashboard" element={<Dashboard />} />
                                 <Route path="/tickets" element={<Tickets />} />
                                 <Route path="/tickets/new" element={<TicketForm />} />
+                                <Route path="/tickets/:id/edit" element={<TicketForm />} />
                                 <Route path="/tickets/import" element={
                                     <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><BulkImport /></ProtectedRoute>
                                 } />
@@ -94,6 +96,9 @@ export default function App() {
                                 } />
                                 <Route path="/sla" element={
                                     <ProtectedRoute roles={['superadmin', 'manager']}><SlaSettings /></ProtectedRoute>
+                                } />
+                                <Route path="/notification-templates" element={
+                                    <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><NotificationTemplates /></ProtectedRoute>
                                 } />
                                 <Route path="/analytics" element={
                                     <ProtectedRoute roles={['superadmin', 'gm', 'manager']}><Analytics /></ProtectedRoute>

@@ -10,6 +10,12 @@ import { logger } from "../../logger.js";
 import { createNotification } from "../notifications/notificationController.js";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
+const ESCALATION_ROLE_BY_LEVEL = {
+    1: "agent",
+    2: "tl",
+    3: "manager",
+    4: "gm",
+};
 
 async function isHoliday(pool, dateStr) {
     const [rows] = await pool.query(
@@ -41,12 +47,37 @@ async function isWithinShift(pool, userId) {
     return shifts.length === 0;
 }
 
-async function findNextAssignee(pool, currentAssigneeId) {
-    const [rows] = await pool.query(
-        `SELECT reporting_to FROM users WHERE id=? LIMIT 1`,
-        [currentAssigneeId]
-    );
-    return rows[0]?.reporting_to || null;
+async function resolveEscalationAssignee(pool, currentAssigneeId, targetLevel) {
+    if (!currentAssigneeId) return null;
+
+    const targetRole = ESCALATION_ROLE_BY_LEVEL[targetLevel];
+    const seen = new Set();
+    let cursor = currentAssigneeId;
+    let fallback = null;
+
+    while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        const [rows] = await pool.query(
+            `SELECT id, role, reporting_to, is_active
+             FROM users
+             WHERE id = ?
+             LIMIT 1`,
+            [cursor]
+        );
+        const user = rows[0];
+        if (!user) break;
+
+        if (user.id !== currentAssigneeId && user.is_active) {
+            fallback = user.id;
+            if (!targetRole || user.role === targetRole) {
+                return user.id;
+            }
+        }
+
+        cursor = user.reporting_to || null;
+    }
+
+    return fallback;
 }
 
 async function runSLAEngine() {
@@ -61,13 +92,11 @@ async function runSLAEngine() {
         const [rows] = await pool.query(
             `SELECT
                t.*,
-               u.reporting_to as manager_id,
                sp.escalation_1_min AS eff_escalation_1_min,
                sp.escalation_2_min AS eff_escalation_2_min,
                sp.escalation_3_min AS eff_escalation_3_min
              FROM tickets t
-             LEFT JOIN users u ON t.assigned_to = u.id
-             LEFT JOIN sla_policies sp ON sp.priority = t.priority
+             LEFT JOIN sla_policies_new sp ON sp.id = t.sla_policy_id
              WHERE t.status IN ('open', 'in_progress') AND t.escalation_level < 4`
         );
         tickets = rows;
@@ -112,31 +141,6 @@ async function runSLAEngine() {
 
                 if (shouldPause) continue;
 
-                // --- SLA Breach Detection ---
-                if (ticket.etr && nowMoment.isAfter(moment(ticket.etr).tz(TZ)) && ticket.sla_state === 'active') {
-                    await pool.query(
-                        `UPDATE tickets SET sla_state='breached' WHERE id=?`,
-                        [ticket.id]
-                    );
-                    logger.info(`[SLA Engine] 🔴 Ticket #${ticket.ticket_number} SLA BREACHED`);
-
-                    // Create in-app notification for assigned agent
-                    if (assignedUserId) {
-                        await createNotification(pool, {
-                            user_id: assignedUserId,
-                            type: 'sla_breach',
-                            title: `SLA Breached: ${ticket.ticket_number}`,
-                            body: `Ticket ${ticket.ticket_number} has breached its SLA. Immediate action required.`,
-                            entity_id: ticket.id
-                        });
-                    }
-
-                    await pool.query(
-                        `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
-                        [ticket.id, "sla_breached", null, `SLA breached at ${nowMoment.format("YYYY-MM-DD HH:mm:ss")}`]
-                    );
-                }
-
                 // --- Escalation Check ---
                 const createdAt = moment(ticket.created_at).tz(TZ);
                 const elapsedMinutes = nowMoment.diff(createdAt, "minutes");
@@ -146,7 +150,7 @@ async function runSLAEngine() {
 
                 if (elapsedMinutes >= threshold) {
                     const newLevel = ticket.escalation_level + 1;
-                    const nextAssigneeId = await findNextAssignee(pool, assignedUserId);
+                    const nextAssigneeId = await resolveEscalationAssignee(pool, assignedUserId, newLevel);
 
                     await pool.query(
                         `UPDATE tickets SET escalation_level=?, assigned_to=COALESCE(?,assigned_to) WHERE id=?`,

@@ -3,19 +3,34 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef } f
 import { io } from 'socket.io-client';
 import api from '../api/axios';
 
-const SocketContext = createContext();
-
-export const useSocket = () => useContext(SocketContext);
+export const SocketContext = createContext();
 
 export const SocketProvider = ({ children }) => {
     const [socket, setSocket] = useState(null);
     const [status, setStatus] = useState('connecting'); // connecting, connected, reconnecting, failed
     const [latestSnapshot, setLatestSnapshot] = useState(null); // Persist snapshot data
     const [lastSync, setLastSync] = useState(Date.now());
+    const [isOnline, setIsOnline] = useState(false); // Manual presence state
     const [lastSeq, setLastSeq] = useState(0);
     const [emergencyMsg, setEmergencyMsg] = useState(null);
     
     const rehydrating = useRef(false);
+
+    // Initial presence fetch
+    useEffect(() => {
+        const fetchInitialPresence = async () => {
+            try {
+                const r = await api.get('/users/presence/me');
+                if (r.data.success) {
+                    setIsOnline(!!r.data.presence.is_online);
+                }
+            } catch (err) {
+                console.error('[SocketContext] Failed to fetch initial presence:', err);
+            }
+        };
+        const token = localStorage.getItem('token');
+        if (token) fetchInitialPresence();
+    }, []);
 
     // Function to fetch full state and sync it
     const rehydrate = useCallback(async () => {
@@ -39,6 +54,22 @@ export const SocketProvider = ({ children }) => {
             rehydrating.current = false;
         }
     }, []);
+
+    const togglePresence = useCallback(async (newState) => {
+        try {
+            const r = await api.post('/users/presence', { 
+                is_online: newState,
+                status: newState ? 'available' : 'offline'
+            });
+            if (r.data.success) {
+                setIsOnline(newState);
+                // Also rehydrate to show the change immediately on dashboard if we are on check center
+                rehydrate();
+            }
+        } catch (err) {
+            console.error('[SocketContext] Failed to toggle presence:', err);
+        }
+    }, [rehydrate]);
 
     useEffect(() => {
         const user = JSON.parse(localStorage.getItem('user'));
@@ -118,7 +149,11 @@ export const SocketProvider = ({ children }) => {
     }, [rehydrate]);
 
     return (
-        <SocketContext.Provider value={{ socket, status, lastSync, latestSnapshot, setLatestSnapshot, lastSeq, emergencyMsg, setEmergencyMsg, rehydrate }}>
+        <SocketContext.Provider value={{ 
+            socket, status, lastSync, latestSnapshot, setLatestSnapshot, 
+            lastSeq, emergencyMsg, setEmergencyMsg, rehydrate,
+            isOnline, togglePresence 
+        }}>
             {children}
         </SocketContext.Provider>
     );

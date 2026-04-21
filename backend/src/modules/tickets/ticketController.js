@@ -1,7 +1,7 @@
 // modules/tickets/ticketController.js
 import connectDB from "../../db/index.js";
 import moment from "moment-timezone";
-import { sendTicketNotification, sendTicketStatusNotification } from "../notifications/emailService.js";
+import { sendTicketNotification, sendTicketStatusNotification, sendTicketAssignedNotification } from "../notifications/emailService.js";
 import { createNotification } from "../notifications/notificationController.js";
 import { workflowEvents } from "../workflows/workflowEngine.js";
 import { logger } from "../../logger.js";
@@ -11,6 +11,58 @@ config();
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 const buildETR = () => moment().tz(TZ).add(2, "hours").format("YYYY-MM-DD HH:mm:ss");
+const ESCALATION_ROLE_BY_LEVEL = {
+    1: "agent",
+    2: "tl",
+    3: "manager",
+    4: "gm",
+};
+
+const fetchTicketAssignmentEmailContext = async (pool, ticketId) => {
+    const [rows] = await pool.query(
+        `SELECT t.*, c.email as customer_email, u.name as assigned_to_name
+         FROM tickets t
+         LEFT JOIN customers c ON t.customer_id = c.id
+         LEFT JOIN users u ON t.assigned_to = u.id
+         WHERE t.id = ?
+         LIMIT 1`,
+        [ticketId]
+    );
+    return rows[0] || null;
+};
+
+const resolveEscalationAssignee = async (pool, currentAssigneeId, targetLevel) => {
+    if (!currentAssigneeId) return null;
+
+    const targetRole = ESCALATION_ROLE_BY_LEVEL[targetLevel];
+    const seen = new Set();
+    let cursor = currentAssigneeId;
+    let fallback = null;
+
+    while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        const [rows] = await pool.query(
+            `SELECT id, role, reporting_to, is_active
+             FROM users
+             WHERE id = ?
+             LIMIT 1`,
+            [cursor]
+        );
+        const user = rows[0];
+        if (!user) break;
+
+        if (user.id !== currentAssigneeId && user.is_active) {
+            fallback = user.id;
+            if (!targetRole || user.role === targetRole) {
+                return user.id;
+            }
+        }
+
+        cursor = user.reporting_to || null;
+    }
+
+    return fallback;
+};
 
 const buildRoleFilter = (user) => {
     const { userId, role } = user;
@@ -232,8 +284,9 @@ export const createTicket = async (req, res) => {
         // 4. Calculate ETR (Enterprise Calculator - Offline Aware)
         const { SlaCalculator } = await import("../../services/sla/calculator.js");
         const calendar = await getSlaCalendar(pool);
+        const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone || TZ };
         const calculator = new SlaCalculator(pool);
-        const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendar);
+        const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendarForTicket);
         const etr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
 
         // 5. Generate Ticket Number (P-00001)
@@ -245,14 +298,14 @@ export const createTicket = async (req, res) => {
 
         const [result] = await pool.query(
             `INSERT INTO tickets (
-                ticket_number, customer_id, project_id, category, priority_id, description,
+                ticket_number, customer_id, project_id, category, priority, priority_id, description,
                 attachment_url, status, escalation_level, sla_state, str, etr, 
                 created_by, assigned_to, source, queue_id, assignment_source,
                 resolved_timezone, sla_policy_id, sla_version
             )
-            VALUES (?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            VALUES (?,?,?,?,?,?,?, ?, 'open', 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-                ticket_number, customer_id, project_id, category, priorityId, description,
+                ticket_number, customer_id, project_id, category, priority, priorityId, description,
                 attachment_url, now, etr, req.user.userId, initialAssignee, 
                 source || "manual", queue_id || null, assignmentSource,
                 resolvedTz, slaPolicy.id, slaPolicy.version
@@ -263,7 +316,7 @@ export const createTicket = async (req, res) => {
 
         // 6. Schedule BullMQ Jobs
         const { jobManager } = await import("../../services/sla/jobManager.js");
-        await jobManager.scheduleJobs({ id: ticketId, etr, resolved_timezone: resolvedTz }, calendar);
+        await jobManager.scheduleJobs({ id: ticketId, etr, resolved_timezone: resolvedTz }, calendarForTicket);
 
         // Log creation activity
         await pool.query(
@@ -292,6 +345,20 @@ export const createTicket = async (req, res) => {
                 body: `Ticket ${ticket_number} (${priority} - ${category}) has been assigned to you.`,
                 entity_id: ticketId
             });
+        }
+
+        // --- NEW: Notify Customer of Assignment ---
+        if (initialAssignee) {
+            const ticketForEmail = await fetchTicketAssignmentEmailContext(pool, ticketId);
+            if (ticketForEmail?.customer_email && ticketForEmail?.assigned_to_name) {
+                sendTicketAssignedNotification(
+                    ticketForEmail,
+                    ticketForEmail.customer_email,
+                    ticketForEmail.assigned_to_name
+                ).catch(err =>
+                    logger.error(`[Manual-Assign] Failed to notify customer on create: ${err.message}`)
+                );
+            }
         }
 
         // Event-driven acknowledgement is handled by workflowEngine -> ticket_created
@@ -461,6 +528,18 @@ export const updateTicket = async (req, res) => {
                 body: `Ticket ${existing[0].ticket_number} has been assigned to you by ${req.user.name}.`,
                 entity_id: req.params.id
             });
+
+            // --- NEW: Notify Customer of Manual Re-assignment ---
+            const ticketForEmail = await fetchTicketAssignmentEmailContext(pool, req.params.id);
+            if (ticketForEmail?.customer_email && ticketForEmail?.assigned_to_name) {
+                sendTicketAssignedNotification(
+                    ticketForEmail,
+                    ticketForEmail.customer_email,
+                    ticketForEmail.assigned_to_name
+                ).catch(err =>
+                    logger.error(`[Manual-Assign] Failed to notify customer on update: ${err.message}`)
+                );
+            }
         }
 
         // Emit workflow event
@@ -491,7 +570,7 @@ export const assignQueue = async (req, res) => {
     try {
         const pool = connectDB();
         const [ticketRows] = await pool.query(
-            `SELECT queue_id, priority, customer_id, project_id, etr FROM tickets WHERE id=?`, 
+            `SELECT queue_id, priority, priority_id, customer_id, project_id, etr, resolved_timezone FROM tickets WHERE id=?`, 
             [req.params.id]
         );
         if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
@@ -519,15 +598,23 @@ export const assignQueue = async (req, res) => {
         });
         
         const calendar = await getSlaCalendar(pool);
+        const calendarForTicket = { ...calendar, timezone: ticket.resolved_timezone || calendar?.timezone || TZ };
         const calculator = new SlaCalculator(pool);
-        const nowStr = moment().tz(TZ).format("YYYY-MM-DD HH:mm:ss");
+        const nowStr = moment().tz(ticket.resolved_timezone || TZ).format("YYYY-MM-DD HH:mm:ss");
         
         // Recalculate ETR from NOW based on full duration (Simplified migration path)
-        const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendar);
+        const etrMoment = calculator.computeDueDate(nowStr, slaPolicy.resolution_hrs, calendarForTicket);
         const newEtr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
         
         await pool.query("UPDATE tickets SET etr = ?, sla_policy_id = ?, sla_version = ? WHERE id = ?", 
             [newEtr, slaPolicy.id, slaPolicy.version, req.params.id]);
+
+        const { jobManager } = await import("../../services/sla/jobManager.js");
+        await jobManager.scheduleJobs({
+            id: req.params.id,
+            etr: newEtr,
+            resolved_timezone: ticket.resolved_timezone || TZ
+        }, calendarForTicket);
 
         await pool.query(
             `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,?,?,?)`,
@@ -673,12 +760,8 @@ export const escalateTicket = async (req, res) => {
         const ticket = rows[0];
         const newLevel = Math.min(ticket.escalation_level + 1, 4);
 
-        let newAssignee = ticket.assigned_to;
-        const [nextUser] = await pool.query(
-            `SELECT id FROM users WHERE reporting_to = ? AND is_active=1 LIMIT 1`,
-            [ticket.assigned_to]
-        );
-        if (nextUser.length) newAssignee = nextUser[0].id;
+        const resolvedAssignee = await resolveEscalationAssignee(pool, ticket.assigned_to, newLevel);
+        const newAssignee = resolvedAssignee || ticket.assigned_to;
 
         await pool.query(
             `UPDATE tickets SET escalation_level=?, assigned_to=? WHERE id=?`,
@@ -704,6 +787,18 @@ export const escalateTicket = async (req, res) => {
                 body: `Ticket ${ticket.ticket_number} has been escalated to Level ${newLevel} and assigned to you.`,
                 entity_id: req.params.id
             });
+
+            // --- NEW: Notify Customer of Escalation Assignment ---
+            const ticketForEmail = await fetchTicketAssignmentEmailContext(pool, req.params.id);
+            if (ticketForEmail?.customer_email && ticketForEmail?.assigned_to_name) {
+                sendTicketAssignedNotification(
+                    ticketForEmail,
+                    ticketForEmail.customer_email,
+                    ticketForEmail.assigned_to_name
+                ).catch(err =>
+                    logger.error(`[Escalation-Assign] Failed to notify customer: ${err.message}`)
+                );
+            }
         }
 
         return res.json({ success: true, message: `Ticket escalated to Level ${newLevel}.`, escalation_level: newLevel });
