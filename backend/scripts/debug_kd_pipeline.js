@@ -8,8 +8,9 @@ async function runTest() {
     const conn = await pool.getConnection();
 
     try {
-        const userId = 6; // khushboodaryani1@gmail.com
-        const queueId = 5; // Domain Queue
+        const [userRows] = await conn.query("SELECT id FROM users WHERE email = ? LIMIT 1", [process.env.GMAIL_USER]);
+        const userId = userRows[0]?.id || 6; 
+        const queueId = 10; // Domain Queue (aligned with production)
         
         console.log("\n--- Starting End-to-End Pipeline Test ---");
 

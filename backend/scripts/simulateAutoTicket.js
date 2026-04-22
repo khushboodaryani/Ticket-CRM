@@ -20,7 +20,7 @@ async function simulate() {
         });
 
         // 1. Ensure the test customer exists
-        const userEmail = 'khushboodaryani1@gmail.com';
+        const userEmail = process.env.GMAIL_USER;
         console.log(`🔍 Checking if customer ${userEmail} exists...`);
 
         let [rows] = await pool.query('SELECT id FROM customers WHERE email = ?', [userEmail]);
