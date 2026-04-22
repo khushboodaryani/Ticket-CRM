@@ -10,6 +10,7 @@ import { sendTicketNotification } from "../notifications/emailService.js";
 import { getShiftAssignee } from "../../services/assignmentService.js";
 import { resolveSlaPolicy, getSlaCalendar, generateTicketNumber, resolveTicketTimezone } from "../sla/slaPolicyService.js";
 import moment from "moment-timezone";
+import { normalizeDomain } from "../../utils/domainUtils.js";
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 
@@ -114,7 +115,7 @@ export const approveDomain = async (req, res) => {
             return res.status(404).json({ success: false, message: "Pending request not found." });
         }
         const request = requests[0];
-        const domain = request.domain;
+        const domain = normalizeDomain(request.domain);
 
         // 2. Verify customer exists
         const [cust] = await conn.query('SELECT id, name, default_project_id FROM customers WHERE id = ?', [customer_id]);

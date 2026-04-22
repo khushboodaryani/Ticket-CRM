@@ -178,10 +178,6 @@ export async function processEnterpriseWorkflow(trigger, data) {
             [finalPriority, priorityId, finalQueueId, finalStatus, finalStr, finalEtr, resolvedTz, slaPolicy.id, slaPolicy.version, ticketId]
         );
 
-        // Step 4e: Schedule Jobs
-        const { jobManager } = await import("../../services/sla/jobManager.js");
-        await jobManager.scheduleJobs({ id: ticketId, etr: finalEtr, resolved_timezone: resolvedTz }, calendarForTicket);
-
         // Step 4e: Rich Activity Trace (for UI visibility)
         const traceNote = matchedRule 
             ? `Automation "${matchedRule.name}" applied. Priority: ${finalPriority}, Queue: ${finalQueueId}, ETR: ${finalEtr}.`
@@ -202,6 +198,13 @@ export async function processEnterpriseWorkflow(trigger, data) {
         // Step 5: Commit
         await conn.commit();
         logger.info(`✅ Enterprise Pipeline complete for Ticket #${ticketId}`);
+
+        try {
+            const { jobManager } = await import("../../services/sla/jobManager.js");
+            await jobManager.scheduleJobs({ id: ticketId, etr: finalEtr, resolved_timezone: resolvedTz }, calendarForTicket);
+        } catch (scheduleErr) {
+            logger.error(`[Workflow] Failed to schedule SLA jobs for ticket ${ticketId}: ${scheduleErr.message}`);
+        }
 
         // Step 6: Assignment Engine (Lazy)
         if (ticket.assignment_source === 'auto') {
@@ -260,7 +263,7 @@ export async function processEnterpriseWorkflow(trigger, data) {
 /**
  * Evaluate if conditions match the payload
  */
-function evaluateConditions(conditions, payload) {
+export function evaluateConditions(conditions, payload) {
     if (!conditions || Object.keys(conditions).length === 0) return true;
 
     for (const [key, expected] of Object.entries(conditions)) {

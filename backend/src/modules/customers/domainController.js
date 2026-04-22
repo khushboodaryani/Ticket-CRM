@@ -2,6 +2,7 @@
 // CRUD for customer_domains — maps email domains to customers/projects
 import connectDB from "../../db/index.js";
 import { resolveCustomerByDomain } from "../../services/emailPoller.js";
+import { PUBLIC_DOMAINS, normalizeDomain, extractDomainFromEmail, isPublicEmailDomain } from "../../utils/domainUtils.js";
 
 // GET /api/domains — list all domain mappings (admin overview)
 export const getAllDomains = async (req, res) => {
@@ -44,15 +45,6 @@ export const getCustomerDomains = async (req, res) => {
 // Public domain blocklist — these should NEVER be mapped to a customer.
 // If someone sends from gmail.com, they go through approval, not auto-routing.
 // ============================================================
-const PUBLIC_DOMAINS = new Set([
-    'gmail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com',
-    'live.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
-    'protonmail.com', 'proton.me', 'zoho.com', 'zoho.in',
-    'yandex.com', 'mail.com', 'gmx.com', 'gmx.net',
-    'rediffmail.com', 'msn.com', 'mail.ru',
-    'googlemail.com', 'fastmail.com', 'tutanota.com',
-]);
-
 /**
  * Extracts the parent domain from a subdomain.
  * e.g., 'shams.multycomm.com' → 'multycomm.com'
@@ -114,10 +106,10 @@ export const addCustomerDomain = async (req, res) => {
         return res.status(400).json({ success: false, message: "Domain is required." });
     }
 
-    const cleanDomain = domain.trim().toLowerCase().replace(/^@/, '');
+    const cleanDomain = normalizeDomain(domain);
 
     // Validate domain format
-    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/.test(cleanDomain)) {
+    if (!cleanDomain) {
         return res.status(400).json({ success: false, message: "Invalid domain format." });
     }
 
@@ -237,17 +229,8 @@ export const checkDomainIngestion = async (req, res) => {
                 conn, pool, email.trim(), "Test User", "Subject", "Body", "msg-test-123"
             );
 
-            const domain = email.split('@')[1]?.toLowerCase();
-            const PUBLIC_DOMAINS = new Set([
-                'gmail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com',
-                'live.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
-                'protonmail.com', 'proton.me', 'zoho.com', 'zoho.in',
-                'yandex.com', 'mail.com', 'gmx.com', 'gmx.net',
-                'rediffmail.com', 'msn.com', 'mail.ru',
-                'googlemail.com', 'fastmail.com', 'tutanota.com',
-            ]);
-
-            const isPublic = PUBLIC_DOMAINS.has(domain);
+            const domain = extractDomainFromEmail(email);
+            const isPublic = isPublicEmailDomain(domain);
 
             if (result) {
                 return res.json({

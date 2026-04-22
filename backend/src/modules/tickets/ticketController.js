@@ -314,10 +314,6 @@ export const createTicket = async (req, res) => {
 
         const ticketId = result.insertId;
 
-        // 6. Schedule BullMQ Jobs
-        const { jobManager } = await import("../../services/sla/jobManager.js");
-        await jobManager.scheduleJobs({ id: ticketId, etr, resolved_timezone: resolvedTz }, calendarForTicket);
-
         // Log creation activity
         await pool.query(
             `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?,'created',?,?)`,
@@ -368,6 +364,13 @@ export const createTicket = async (req, res) => {
             ticketId,
             payload: { customer_id, project_id, category, priority, status: 'open', source: source || 'manual', queue_id }
         });
+
+        try {
+            const { jobManager } = await import("../../services/sla/jobManager.js");
+            await jobManager.scheduleJobs({ id: ticketId, etr, resolved_timezone: resolvedTz }, calendarForTicket);
+        } catch (scheduleErr) {
+            logger.error(`[TicketCreate] Failed to schedule SLA jobs for ticket ${ticketId}: ${scheduleErr.message}`);
+        }
 
         // Trigger Global Broadcast for P1 — MUST complete BEFORE response is sent
         // Otherwise the frontend navigates away and misses the socket event

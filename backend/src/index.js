@@ -15,7 +15,7 @@ import { startSLAEngine } from "./modules/sla/slaEngine.js";
 import { initWorkflowEngine } from "./modules/workflows/workflowEngine.js";
 import { logger } from "./logger.js";
 import { initSocket } from "./services/socketServer.js";
-import { startEmailPoller } from "./services/emailPoller.js";
+import { startEmailWorkerManager, stopEmailWorkerManager } from "./services/emailWorkerManager.js";
 
 // Verify necessary environment variables
 if (!process.env.PORT) {
@@ -45,6 +45,7 @@ if (process.env.USE_HTTPS === 'true') {
 
 // Initialize the connection pool
 const pool = connectDB();
+const EMAIL_RUNTIME_MODE = (process.env.EMAIL_RUNTIME_MODE || 'worker_thread').toLowerCase();
 
 process.title = 'Ticket CRM';
 
@@ -71,8 +72,11 @@ const startServer = async () => {
         // Initialize Workflow Engine
         initWorkflowEngine();
 
-        // Start Email-to-Ticket Poller (modular — safe to skip if env vars missing)
-        startEmailPoller();
+        // Start Email-to-Ticket runtime
+        if (EMAIL_RUNTIME_MODE === 'disabled') {
+            logger.warn('[EmailWorker] Email ingestion is disabled by EMAIL_RUNTIME_MODE=disabled.');
+        }
+        await startEmailWorkerManager();
 
     } catch (error) {
         console.error("❌ Error starting server:", error);
@@ -84,6 +88,7 @@ const startServer = async () => {
 const gracefulShutdown = async () => {
     console.log('⚠️  Received shutdown signal, closing server and database connections...'.yellow.bold);
 
+    await stopEmailWorkerManager().catch(err => console.error('Error stopping email worker:', err));
     await pool.end().catch(err => console.error('Error closing MySQL pool:', err));
 
     server.close(() => {

@@ -1,6 +1,7 @@
 // modules/projects/projectController.js
 import connectDB from "../../db/index.js";
 import { generateCode } from "../../services/generateCode.js";
+import { normalizeDomain } from "../../utils/domainUtils.js";
 
 // GET /api/projects
 export const getProjects = async (req, res) => {
@@ -95,12 +96,14 @@ export const createProject = async (req, res) => {
 
         // If domain provided, create a project-level domain mapping
         if (domain && domain.trim()) {
-            const cleanDomain = domain.trim().toLowerCase().replace(/^@/, '');
+            const cleanDomain = normalizeDomain(domain);
             try {
-                await pool.query(
-                    `INSERT IGNORE INTO customer_domains (customer_id, project_id, domain) VALUES (?, ?, ?)`,
-                    [customer_id, projectId, cleanDomain]
-                );
+                if (cleanDomain) {
+                    await pool.query(
+                        `INSERT IGNORE INTO customer_domains (customer_id, project_id, domain) VALUES (?, ?, ?)`,
+                        [customer_id, projectId, cleanDomain]
+                    );
+                }
             } catch (domainErr) {
                 console.error("Project domain mapping failed (non-fatal):", domainErr.message);
             }
@@ -137,12 +140,14 @@ export const updateProject = async (req, res) => {
                 await pool.query('DELETE FROM customer_domains WHERE project_id = ?', [req.params.id]);
                 // Add new one if provided
                 if (domain && domain.trim()) {
-                    const cleanDomain = domain.trim().toLowerCase().replace(/^@/, '');
+                    const cleanDomain = normalizeDomain(domain);
                     try {
-                        await pool.query(
-                            `INSERT IGNORE INTO customer_domains (customer_id, project_id, domain) VALUES (?, ?, ?)`,
-                            [project[0].customer_id, req.params.id, cleanDomain]
-                        );
+                        if (cleanDomain) {
+                            await pool.query(
+                                `INSERT IGNORE INTO customer_domains (customer_id, project_id, domain) VALUES (?, ?, ?)`,
+                                [project[0].customer_id, req.params.id, cleanDomain]
+                            );
+                        }
                     } catch (domainErr) {
                         console.error("Project domain update failed (non-fatal):", domainErr.message);
                     }

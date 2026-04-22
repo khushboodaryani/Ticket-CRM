@@ -1,12 +1,12 @@
 // backend/src/services/sla/jobManager.js
-import { Queue, Worker } from 'bullmq';
-import redis, { redisConfig } from '../../config/redis.js';
+import { Queue } from 'bullmq';
+import redis from '../../config/redis.js';
 import { logger } from '../../logger.js';
 import { SlaCalculator } from './calculator.js';
 import connectDB from '../../db/index.js';
 import moment from 'moment-timezone';
 
-const slaQueue = new Queue('slaQueue', { connection: redis });
+export const slaQueue = new Queue('slaQueue', { connection: redis });
 
 /**
  * Enterprise Job Manager
@@ -35,13 +35,13 @@ export class SlaJobManager {
         
         // 2. Schedule Resolution Breach
         const resolutionDueDate = moment.utc(ticket.etr);
-        const delay = Math.max(0, resolutionDueDate.diff(moment.utc()));
+        const resolutionDelay = Math.max(0, resolutionDueDate.diff(moment.utc()));
 
         await slaQueue.add(
             `breach_${ticketId}`,
             { ticketId, type: 'RESOLUTION_BREACH' },
             { 
-                delay, 
+                delay: resolutionDelay, 
                 jobId: `sla_breach_${ticketId}`,
                 attempts: 5,
                 backoff: { type: 'exponential', delay: 5000 },
@@ -50,7 +50,7 @@ export class SlaJobManager {
         );
 
         // 3. Schedule Pre-Breach Warning (e.g., 30 mins before)
-        const warningDelay = Math.max(0, delay - (30 * 60 * 1000));
+        const warningDelay = Math.max(0, resolutionDelay - (30 * 60 * 1000));
         if (warningDelay > 0) {
             await slaQueue.add(
                 `warning_${ticketId}`,
@@ -63,7 +63,23 @@ export class SlaJobManager {
             );
         }
 
-        logger.info(`[SLA-Job] Scheduled jobs for Ticket #${ticketId}. Breach in ${Math.round(delay/60000)}m`);
+        const firstResponseDueDate = ticket.str ? moment.utc(ticket.str) : null;
+        const firstResponseDelay = firstResponseDueDate ? Math.max(0, firstResponseDueDate.diff(moment.utc())) : null;
+        if (firstResponseDelay !== null) {
+            await slaQueue.add(
+                `first_response_${ticketId}`,
+                { ticketId, type: 'FIRST_RESPONSE_BREACH' },
+                {
+                    delay: firstResponseDelay,
+                    jobId: `sla_first_resp_${ticketId}`,
+                    attempts: 5,
+                    backoff: { type: 'exponential', delay: 5000 },
+                    removeOnComplete: true
+                }
+            );
+        }
+
+        logger.info(`[SLA-Job] Scheduled jobs for Ticket #${ticketId}. Warning=${Math.round(warningDelay/60000)}m breach=${Math.round(resolutionDelay/60000)}m first_response=${firstResponseDelay !== null ? Math.round(firstResponseDelay/60000) : 'n/a'}m`);
     }
 
     /**

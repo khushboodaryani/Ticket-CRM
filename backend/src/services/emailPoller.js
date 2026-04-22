@@ -16,6 +16,10 @@ import { SlaCalculator } from './sla/calculator.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { publishBroadcast } from './realtimeEvents.js';
+import { PUBLIC_DOMAINS, extractDomainFromEmail, buildDomainCandidates } from '../utils/domainUtils.js';
+import { emailQueue } from '../queues/emailQueue.js';
+import { buildInboundEmailJobPayload } from './emailProcessor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +50,67 @@ const STRICT_SUBJECT_PARTICIPANT_MATCH = String(process.env.STRICT_SUBJECT_PARTI
 // The DB (email_logs) handles all deduplication; this is just an IMAP bandwidth limit.
 const POLLER_LOOKBACK_HOURS = parseInt(process.env.EMAIL_POLLER_LOOKBACK_HOURS || '24', 10);
 const systemUserId = parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10); // Default System/Admin user ID for auto-created tickets
+const EMAIL_CYCLE_WARN_MS = Math.max(5000, parseInt(process.env.EMAIL_POLLER_CYCLE_WARN_MS || '20000', 10));
+const EMAIL_MESSAGE_WARN_MS = Math.max(1000, parseInt(process.env.EMAIL_POLLER_MESSAGE_WARN_MS || '8000', 10));
+const EMAIL_POLLER_SEARCH_MODE = String(process.env.EMAIL_POLLER_SEARCH_MODE || 'unseen').toLowerCase();
+const EMAIL_POLLER_CHECKPOINT_KEY = process.env.EMAIL_POLLER_CHECKPOINT_KEY || 'EMAIL_POLLER_LAST_UID';
+let consecutiveLockBusyCount = 0;
+
+const mailLogColors = {
+    inbound: (text) => `\x1b[1;96m${text}\x1b[0m`,
+};
+
+function truncateForTable(value, max = 60) {
+    const str = String(value || '');
+    if (str.length <= max) return str;
+    return `${str.slice(0, max - 3)}...`;
+}
+
+function printCycleTable(rows) {
+    if (!rows?.length || typeof console.table !== 'function') return;
+    try {
+        console.table(rows);
+    } catch (_) {}
+}
+
+async function getPollerCheckpoint(pool) {
+    const [rows] = await pool.query(
+        `SELECT setting_value FROM system_settings WHERE setting_key = ? LIMIT 1`,
+        [EMAIL_POLLER_CHECKPOINT_KEY]
+    );
+    const value = parseInt(rows[0]?.setting_value || '0', 10);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+async function setPollerCheckpoint(pool, uid) {
+    const normalizedUid = parseInt(uid, 10);
+    if (!Number.isFinite(normalizedUid) || normalizedUid <= 0) return;
+
+    await pool.query(
+        `INSERT INTO system_settings (setting_key, setting_value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+        [EMAIL_POLLER_CHECKPOINT_KEY, String(normalizedUid)]
+    );
+}
+
+async function searchBootstrapMessages(connection, pollerSinceDate) {
+    const searchCriteria = EMAIL_POLLER_SEARCH_MODE === 'all'
+        ? ['ALL', ['SINCE', pollerSinceDate]]
+        : ['UNSEEN', ['SINCE', pollerSinceDate]];
+    const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
+    const messages = await connection.search(searchCriteria, fetchOptions);
+    const searchLabel = EMAIL_POLLER_SEARCH_MODE === 'all' ? 'ALL' : 'UNSEEN';
+
+    return { messages, searchLabel, mode: 'bootstrap' };
+}
+
+async function searchMessagesSinceCheckpoint(connection, lastSeenUid) {
+    const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
+    const nextUid = Math.max(1, parseInt(lastSeenUid || 0, 10) + 1);
+    const messages = await connection.search([['UID', `${nextUid}:*`]], fetchOptions);
+    return { messages, searchLabel: `UID>${lastSeenUid}`, mode: 'checkpoint' };
+}
 
 function stripHtml(html = '') {
     return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -196,51 +261,91 @@ export async function processEmails(connection) {
         lockConn = await pool.getConnection();
         const [lockResult] = await lockConn.query("SELECT GET_LOCK('email_poller_lock', 0) AS lockStatus");
         if (lockResult[0].lockStatus !== 1) {
-            logger.info('[EmailPoller] Global lock busy. Another worker is processing emails.');
+            consecutiveLockBusyCount += 1;
+            const busyLevel = consecutiveLockBusyCount >= 4 ? 'warn' : 'info';
+            logger[busyLevel](
+                `[EmailPoller] Global lock busy. Another worker is processing emails. consecutiveBusy=${consecutiveLockBusyCount}`
+            );
             isProcessing = false;
             return;
         }
+        consecutiveLockBusyCount = 0;
         lockAcquired = true;
-        // Rolling 24-hour window: recomputed live each cycle so server restarts don't miss emails.
-        // DB deduplication (email_logs) prevents any double-processing.
         const pollerSinceTs = Date.now() - (POLLER_LOOKBACK_HOURS * 60 * 60 * 1000);
         const pollerSinceDate = moment(pollerSinceTs).tz(TZ).format('DD-MMM-YYYY');
-        const searchCriteria = ['ALL', ['SINCE', pollerSinceDate]];
-        const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
+        const lastSeenUid = await getPollerCheckpoint(pool);
 
-        let messages = await connection.search(searchCriteria, fetchOptions);
+        let searchResult;
+        if (lastSeenUid > 0) {
+            searchResult = await searchMessagesSinceCheckpoint(connection, lastSeenUid);
+        } else {
+            searchResult = await searchBootstrapMessages(connection, pollerSinceDate);
+        }
+
+        let messages = searchResult.messages || [];
         const rawCount = messages.length;
+        const searchLabel = searchResult.searchLabel;
 
         if (messages.length > 0) {
-            // Prioritize newest messages first and cap per-cycle batch size.
+            // Process oldest first so checkpoint advancement stays ordered and safe.
             messages = messages
-                .sort((a, b) => (b.attributes?.uid || 0) - (a.attributes?.uid || 0))
+                .sort((a, b) => (a.attributes?.uid || 0) - (b.attributes?.uid || 0))
                 .slice(0, Math.max(1, MAX_MESSAGES_PER_CYCLE));
-            logger.info(`[EmailPoller] Search returned ${rawCount} (SINCE ${pollerSinceDate}). Processing ${messages.length}.`);
+            logger.info(`[EmailPoller] Search returned ${rawCount} (${searchLabel}). Processing ${messages.length}. checkpoint=${lastSeenUid || 0}`);
         } else {
             isProcessing = false;
-            logger.info(`[EmailPoller] No eligible unread emails in this cycle (search returned ${rawCount}).`);
+            logger.info(`[EmailPoller] No eligible emails in this cycle (${searchLabel} search returned ${rawCount}). checkpoint=${lastSeenUid || 0}`);
             return;
         }
 
+        const cycleRows = [];
         for (const msg of messages) {
+            const messageStart = Date.now();
+            const currentUid = parseInt(msg.attributes?.uid || 0, 10);
             try {
-                // Process the email first. We only mark as SEEN if processing succeeds.
-                await processOneEmail(
-                    pool, msg, connection,
-                    parseInt(process.env.EMAIL_DEFAULT_PROJECT_ID || '1', 10),
-                    process.env.EMAIL_DEFAULT_PRIORITY || 'High', // Default to 'High' category tier
-                    parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10)
+                const jobPayload = await buildInboundEmailJobPayload(msg);
+                await emailQueue.add(
+                    'inbound_email',
+                    jobPayload,
+                    { jobId: `email_${jobPayload.messageId.replace(/[^a-zA-Z0-9_-]/g, '_')}` }
                 );
-                
-                // Mark as SEEN only after successful processing to prevent swallowed emails.
+
+                // Mark as SEEN only after successful enqueue to prevent repeated mailbox scans.
                 await connection.addFlags(msg.attributes.uid, ['\\Seen']);
+                await setPollerCheckpoint(pool, currentUid);
+                const durationMs = Date.now() - messageStart;
+                cycleRows.push({
+                    uid: currentUid || '',
+                    status: 'queued',
+                    response_ms: durationMs,
+                    ticket: '',
+                    message_id: truncateForTable(jobPayload.messageId || '', 54)
+                });
+                if (durationMs > EMAIL_MESSAGE_WARN_MS) {
+                    logger.warn(`[EmailPoller] Slow email enqueue uid=${msg.attributes?.uid} duration=${durationMs}ms`);
+                } else {
+                    logger.info(`[EmailPoller] Email queued uid=${msg.attributes?.uid} duration=${durationMs}ms`);
+                }
             } catch (err) {
-                logger.error(`[EmailPoller] Failed email UID ${msg.attributes?.uid}: ${err.message}`);
-                // If it failed, we leave it UNSEEN so the next scan can try again.
+                cycleRows.push({
+                    uid: currentUid || '',
+                    status: 'enqueue_failed',
+                    response_ms: Date.now() - messageStart,
+                    ticket: '',
+                    message_id: '',
+                });
+                logger.error(`[EmailPoller] Failed to enqueue email UID ${msg.attributes?.uid}: ${err.message}`);
+                // If enqueue failed, leave it UNSEEN and stop so checkpoint ordering stays safe.
+                break;
             }
         }
-        logger.info(`[EmailPoller] Cycle completed in ${Date.now() - cycleStart}ms`);
+        printCycleTable(cycleRows);
+        const cycleDuration = Date.now() - cycleStart;
+        if (cycleDuration > EMAIL_CYCLE_WARN_MS) {
+            logger.warn(`[EmailPoller] Slow cycle completed in ${cycleDuration}ms`);
+        } else {
+            logger.info(`[EmailPoller] Cycle completed in ${cycleDuration}ms`);
+        }
     } catch (err) {
         logger.error(`[EmailPoller] Search error: ${err.message}`);
     } finally {
@@ -279,18 +384,8 @@ export async function processEmails(connection) {
  * Returns: { customerId, projectId, customerName, matchType } or null (held for approval)
  */
 
-// Public domains that should NEVER be domain-routed
-const PUBLIC_DOMAINS = new Set([
-    'gmail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com',
-    'live.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
-    'protonmail.com', 'proton.me', 'zoho.com', 'zoho.in',
-    'yandex.com', 'mail.com', 'gmx.com', 'gmx.net',
-    'rediffmail.com', 'msn.com', 'mail.ru',
-    'googlemail.com', 'fastmail.com', 'tutanota.com',
-]);
-
 export async function resolveCustomerByDomain(conn, pool, senderEmail, senderName, rawSubject, bodyText, messageId, inReplyTo, references, logId) {
-    const domain = senderEmail.split('@')[1]?.toLowerCase();
+    const domain = extractDomainFromEmail(senderEmail);
     if (!domain) return null;
 
     const DEFAULT_PROJECT_ID = parseInt(process.env.EMAIL_DEFAULT_PROJECT_ID || '1', 10);
@@ -324,11 +419,7 @@ export async function resolveCustomerByDomain(conn, pool, senderEmail, senderNam
 
     // 2. Try customer-level domain match (bubble up parent domains)
     //    e.g. for 'shams.multycomm.com' → try ['shams.multycomm.com', 'multycomm.com']
-    const domainParts = domain.split('.');
-    const domainCandidates = [];
-    for (let i = 0; i < domainParts.length - 1; i++) {
-        domainCandidates.push(domainParts.slice(i).join('.'));
-    }
+    const domainCandidates = buildDomainCandidates(domain);
 
     if (domainCandidates.length > 0) {
         const [customerMatch] = await conn.query(
@@ -523,22 +614,22 @@ function resolvePriorityFromText(subject = '', body = '') {
     return { categoryId: 2, isEmergency: false };
 }
 
-async function processOneEmail(pool, msg, connection, defaultProjectId, defaultPriority, systemUserId) {
+export async function processOneEmail(pool, msg, connection, defaultProjectId, defaultPriority, systemUserId) {
     const allPart = msg.parts.find(p => p.which === '');
-    if (!allPart) return;
+    if (!allPart) return { status: 'missing_body' };
 
     let parsed;
     try {
         parsed = await simpleParser(Buffer.from(allPart.body));
     } catch (parseErr) {
         logger.error(`[EmailPoller] Failed to parse email body: ${parseErr.message}`);
-        return;
+        return { status: 'parse_failed' };
     }
 
     const messageId = normalizeMessageId(parsed.messageId);
     if (!messageId) {
         logger.warn(`[EmailPoller] Email has no Message-ID header — skipping to prevent DB errors.`);
-        return;
+        return { status: 'missing_message_id' };
     }
 
     const inReplyTo = normalizeMessageId(parsed.inReplyTo);
@@ -548,7 +639,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     const senderName = parsed.from?.value?.[0]?.name || senderEmail;
 
     if (!senderEmail || senderEmail === SUPPORT_EMAIL || senderEmail === GMAIL_POLLER_EMAIL) {
-        return;
+        return { status: 'self_email', messageId };
     }
 
     const rawSubject = (parsed.subject || 'No Subject').trim();
@@ -573,7 +664,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
     if (existingLog.length) {
         logger.info(`[EmailPoller] ℹ️ Skipping message already in logs (${existingLog[0].status}): ${messageId}`);
-        return;
+        return { status: `skip_${existingLog[0].status}`, messageId };
     }
 
     const [existingMsg] = await pool.query(
@@ -582,7 +673,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
     );
     if (existingMsg.length) {
         logger.info(`[EmailPoller] ℹ️ Skipping duplicate message in DB: ${messageId}`);
-        return;
+        return { status: 'skip_duplicate_db', messageId };
     }
 
     // Standardize Participants (To+CC only; never promote BCC into outbound participant graph)
@@ -603,7 +694,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         } catch (e) {
             if (e.code === 'ER_DUP_ENTRY') {
                 logger.info(`[EmailPoller] 🏎️ Race Condition: Message ${messageId} already being handled by another worker.`);
-                return; // Silent exit
+                return { status: 'skip_race_duplicate', messageId }; // Silent exit
             }
             logger.error(`[EmailPoller] Log error: ${e.message}`);
         }
@@ -657,8 +748,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         // 5. Broadcast real-time message + ticket update (ONLY if NOT automated)
         try {
             if (!isAutomated) {
-                const { broadcast } = await import('./socketService.js');
-                broadcast('new_message', {
+                publishBroadcast('new_message', {
                     id: msgResult.insertId,
                     ticket_id: ticketId,
                     conversation_id: conversationId,
@@ -669,7 +759,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
                 });
 
                 // Notify UI that this ticket was updated (for list refreshes)
-                broadcast('ticket_updated', {
+                publishBroadcast('ticket_updated', {
                     ticket_id: ticketId,
                     action: 'reply_received'
                 });
@@ -695,6 +785,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
 
         if (logId) await conn.query(`UPDATE email_logs SET status='processed' WHERE id=?`, [logId]);
         logger.info(`[EmailPoller] ✅ Threaded reply to ${ticketNumber}`);
+        return { status: 'reply_threaded', messageId, ticketNumber };
     };
 
     const conn = await pool.getConnection();
@@ -840,9 +931,9 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         // --- STEP 4: Attach or Create ---
         if (matchedTicketId && matchedConvId) {
             logger.info(`[EmailPoller] Match result: reason=${matchReason} messageId=${messageId} inReplyTo=${inReplyTo || ''} ticket=${matchedNum}`);
-            await appendReply(matchedTicketId, matchedConvId, matchedNum);
+            const appendResult = await appendReply(matchedTicketId, matchedConvId, matchedNum);
             await conn.commit();
-            return;
+            return appendResult || { status: 'reply_threaded', messageId, ticketNumber: matchedNum };
         }
 
         // Create New Ticket — Domain-Based Customer Resolution
@@ -855,7 +946,7 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
             // Unknown domain — email has been held for superadmin approval. Commit and exit.
             await conn.commit();
             logger.info(`[EmailPoller] ⏸️ Email held for domain approval: ${senderEmail} (messageId=${messageId})`);
-            return;
+            return { status: 'held_for_approval', messageId };
         }
 
         const { customerId, customerName: resolvedCustomerName, matchType: domainMatchType, queueId: resolvedQueueId } = domainResolution;
@@ -1003,10 +1094,11 @@ async function processOneEmail(pool, msg, connection, defaultProjectId, defaultP
         // Real-time broadcasts for UI
         try {
             if (!isAutomated) {
-                const { broadcast } = await import('./socketService.js');
-                broadcast('new_ticket', { id: ticketId, ticket_number: ticketNumber, status: 'open', created_at: nowStr });
+                publishBroadcast('new_ticket', { id: ticketId, ticket_number: ticketNumber, status: 'open', created_at: nowStr });
             }
         } catch (_) {}
+
+        return { status: 'ticket_created', messageId, ticketNumber };
 
     } catch (err) {
         // Safe rollback — conn itself might be broken (e.g. DB disconnected)
@@ -1068,7 +1160,7 @@ export async function startEmailPoller() {
 
         // Real-time trigger: process immediately when server receives new mail notifications.
         activeConnection.imap.on('mail', (numNewMsgs) => {
-            logger.info(`[EmailPoller] New mail event received (${numNewMsgs || 0}). Triggering immediate scan.`);
+            logger.info(mailLogColors.inbound(`[EmailPoller] INBOUND mail received (${numNewMsgs || 0}). Triggering immediate scan.`));
             processEmails(activeConnection).catch(e => logger.error(`[EmailPoller] Mail-event process error: ${e.message}`));
         });
 

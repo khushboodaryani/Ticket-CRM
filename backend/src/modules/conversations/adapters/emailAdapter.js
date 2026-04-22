@@ -3,7 +3,7 @@
 
 import nodemailer from 'nodemailer';
 import { logger } from '../../../logger.js';
-import { logOutgoingEmail } from '../../notifications/emailService.js';
+import { logOutgoingEmail } from '../../notifications/emailPersistence.js';
 import connectDB from '../../../db/index.js';
 import path from 'path';
 import { fileURLToPath } from 'url';

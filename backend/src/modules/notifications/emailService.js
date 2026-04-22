@@ -1,43 +1,39 @@
 // modules/notifications/emailService.js
-import nodemailer from 'nodemailer';
 import { logger } from '../../logger.js';
 import connectDB from '../../db/index.js';
 import { getConversationTrailHtml } from '../conversations/adapters/emailAdapter.js';
 import { resolveSlaPolicy } from '../sla/slaPolicyService.js';
 import { renderNotificationTemplate, TEMPLATE_KEYS } from './templateService.js';
-
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD
-    }
-});
+import { publishBroadcast } from '../../services/realtimeEvents.js';
+import { transporter } from '../../services/mailTransport.js';
+import { outboundEmailQueue } from '../../queues/outboundEmailQueue.js';
 
 const REPLY_TO_EMAIL = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim();
 const MAX_PARTICIPANT_NOTIFY = Math.max(1, parseInt(process.env.MAX_PARTICIPANT_NOTIFY || '20', 10));
 const COMPANY_NAME = process.env.COMPANY_NAME || 'Team Multycomm';
+const mailLogColors = {
+    outbound: (text) => `\x1b[1;92m${text}\x1b[0m`,
+};
 
 const formatDisplayValue = (value, fallback = 'N/A') => value || fallback;
 
-/**
- * Log an outgoing email's message-id to email_logs to prevent poller reflection loops.
- */
-export async function logOutgoingEmail(pool, messageId, ticketNumber = null) {
-    if (!messageId) return;
-    try {
-        const cleanMsgId = messageId.replace(/[<>]/g, '').trim();
-        await pool.query(
-            `INSERT INTO email_logs (message_id, status, error_message) 
-             VALUES (?, 'processed', ?) 
-             ON DUPLICATE KEY UPDATE status = 'processed'`,
-            [cleanMsgId, `Outgoing notification for ${ticketNumber || 'system'}`]
-        );
-    } catch (err) {
-        logger.error(`[EmailService] Failed to log outgoing ID ${messageId}: ${err.message}`);
-    }
+async function enqueueOutboundEmail(type, mailOptions, metadata = {}) {
+    const target = mailOptions.to || mailOptions.bcc || mailOptions.cc || 'unknown';
+    await outboundEmailQueue.add(
+        type,
+        {
+            mailOptions,
+            metadata: {
+                ...metadata,
+                type,
+                target
+            }
+        },
+        {
+            jobId: metadata.jobId || `${type}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+        }
+    );
+    logger.info(mailLogColors.outbound(`📬 OUTBOUND ${type} queued for ${target}`));
 }
 
 /**
@@ -188,25 +184,15 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
     };
 
     try {
-        await transporter.sendMail(mailOptions);
-        logger.info(`📧 Notification email sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
-        
-        // --- PERSISTENCE & PREVENTION ---
-        // 1. Log in email_logs to prevent reflection
-        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
-
-        // 2. Insert into conversation_messages so replies can thread back to this automated receipt
-        try {
-            const [conv] = await pool.query('SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1', [ticket.id]);
-            if (conv.length) {
-                await pool.query(
-                    `INSERT INTO conversation_messages (conversation_id, sender_type, sender_name, message_body, message_id, in_reply_to, reference_chain)
-                     VALUES (?, 'system', 'Support Team', ?, ?, ?, ?)`,
-                    [conv[0].id, `Automated Acknowledgement Sent`, headers.messageId.replace(/[<>]/g, '').trim(), headers.inReplyTo, headers.references]
-                );
-            }
-        } catch (dbErr) { logger.warn(`[EmailService] Failed to record automated receipt in DB: ${dbErr.message}`); }
-
+        await enqueueOutboundEmail('ticket_notification', mailOptions, {
+            ticketId: ticket.id,
+            ticketNumber: ticket.ticket_number,
+            outgoingMessageId: headers.messageId,
+            inReplyTo: headers.inReplyTo,
+            references: headers.references,
+            conversationMessageBody: 'Automated Acknowledgement Sent',
+            jobId: `ticket_notification:${ticket.ticket_number}:${headers.messageId}`
+        });
     } catch (error) {
         logger.error(`❌ Failed to send notification email: ${error.message}`);
     }
@@ -284,19 +270,15 @@ export const sendTicketAssignedNotification = async (ticket, customerEmail, agen
     };
 
     try {
-        await transporter.sendMail(mailOptions);
-        logger.info(`📧 Assignment notification sent to ${customerEmail} for ${ticket.ticket_number} (Agent: ${agentName})`);
-        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
-        try {
-            const [conv] = await pool.query('SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1', [ticket.id]);
-            if (conv.length) {
-                await pool.query(
-                    `INSERT INTO conversation_messages (conversation_id, sender_type, sender_name, message_body, message_id, in_reply_to, reference_chain)
-                     VALUES (?, 'system', 'Support Team', ?, ?, ?, ?)`,
-                    [conv[0].id, `Ticket assigned to ${agentName}`, headers.messageId.replace(/[<>]/g, '').trim(), headers.inReplyTo, headers.references]
-                );
-            }
-        } catch (dbErr) { logger.warn(`[EmailService] Failed to record assignment in trail: ${dbErr.message}`); }
+        await enqueueOutboundEmail('assignment_notification', mailOptions, {
+            ticketId: ticket.id,
+            ticketNumber: ticket.ticket_number,
+            outgoingMessageId: headers.messageId,
+            inReplyTo: headers.inReplyTo,
+            references: headers.references,
+            conversationMessageBody: `Ticket assigned to ${agentName}`,
+            jobId: `assignment_notification:${ticket.ticket_number}:${headers.messageId}`
+        });
     } catch (error) {
         logger.error(`❌ Failed to send assignment notification: ${error.message}`);
     }
@@ -374,19 +356,15 @@ export const sendSlaBreachNotification = async (ticket, customerEmail) => {
     };
 
     try {
-        await transporter.sendMail(mailOptions);
-        logger.info(`📧 SLA breach notification sent to ${customerEmail} for ${ticket.ticket_number}`);
-        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
-        try {
-            const [conv] = await pool.query('SELECT id FROM conversations WHERE ticket_id = ? LIMIT 1', [ticket.id]);
-            if (conv.length) {
-                await pool.query(
-                    `INSERT INTO conversation_messages (conversation_id, sender_type, sender_name, message_body, message_id, in_reply_to, reference_chain)
-                     VALUES (?, 'system', 'Support Team', ?, ?, ?, ?)`,
-                    [conv[0].id, `SLA Breached — Ticket escalated for priority resolution`, headers.messageId.replace(/[<>]/g, '').trim(), headers.inReplyTo, headers.references]
-                );
-            }
-        } catch (dbErr) { logger.warn(`[EmailService] Failed to record breach in trail: ${dbErr.message}`); }
+        await enqueueOutboundEmail('sla_breach_notification', mailOptions, {
+            ticketId: ticket.id,
+            ticketNumber: ticket.ticket_number,
+            outgoingMessageId: headers.messageId,
+            inReplyTo: headers.inReplyTo,
+            references: headers.references,
+            conversationMessageBody: 'SLA Breached — Ticket escalated for priority resolution',
+            jobId: `sla_breach_notification:${ticket.ticket_number}:${headers.messageId}`
+        });
     } catch (error) {
         logger.error(`❌ Failed to send SLA breach notification: ${error.message}`);
     }
@@ -469,11 +447,13 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
             `
         };
 
-        await transporter.sendMail(mailOptions);
-        logger.info(`📧 Sync notification sent to ${cappedRecipients.length} participant(s) for ${ticket.ticket_number}`);
-
-        // --- PREVENTION ---
-        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
+        await enqueueOutboundEmail('participant_reply_notification', mailOptions, {
+            ticketNumber: ticket.ticket_number,
+            outgoingMessageId: headers.messageId,
+            inReplyTo: headers.inReplyTo,
+            references: headers.references,
+            jobId: `participant_reply_notification:${ticket.ticket_number}:${headers.messageId}`
+        });
 
     } catch (err) {
         logger.error(`❌ Failed to send participant sync notification: ${err.message}`);
@@ -532,11 +512,13 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
     };
 
     try {
-        await transporter.sendMail(mailOptions);
-        logger.info(`📧 Status update email sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
-
-        // --- PREVENTION ---
-        await logOutgoingEmail(pool, headers.messageId, ticket.ticket_number);
+        await enqueueOutboundEmail('status_update_notification', mailOptions, {
+            ticketNumber: ticket.ticket_number,
+            outgoingMessageId: headers.messageId,
+            inReplyTo: headers.inReplyTo,
+            references: headers.references,
+            jobId: `status_update_notification:${ticket.ticket_number}:${headers.messageId}`
+        });
     } catch (error) {
         logger.error(`❌ Failed to send status update email: ${error.message}`);
     }
@@ -553,20 +535,14 @@ export const sendEmergencyBroadcast = async (ticket) => {
         
         // 1. WebSocket Broadcast
         try {
-            const { getIO } = await import('../../services/socketService.js');
-            const io = getIO();
-            if (io) {
-                io.emit('emergency_alert', {
-                    ticket_id: ticket.id || null,
-                    ticket_number: ticket.ticket_number,
-                    category: ticket.category,
-                    priority: ticket.priority,
-                    message: "🚨 EMERGENCY: P1 Ticket Created!"
-                });
-                logger.info(`📡 WebSocket emergency_alert emitted to all connected clients`);
-            } else {
-                logger.warn(`⚠️ Socket.io instance is NULL — emergency_alert NOT emitted`);
-            }
+            publishBroadcast('emergency_alert', {
+                ticket_id: ticket.id || null,
+                ticket_number: ticket.ticket_number,
+                category: ticket.category,
+                priority: ticket.priority,
+                message: "🚨 EMERGENCY: P1 Ticket Created!"
+            });
+            logger.info(`📡 WebSocket emergency_alert emitted to all connected clients`);
         } catch (err) { logger.warn(`Emergency socket failed: ${err.message}`); }
 
         // 2. In-App Notifications
@@ -607,8 +583,10 @@ export const sendEmergencyBroadcast = async (ticket) => {
                   </div>
                 `
             };
-            await transporter.sendMail(mailOptions);
-            logger.info(`📧 Emergency broadcast email sent to ${emails.length} users.`);
+            await enqueueOutboundEmail('emergency_broadcast', mailOptions, {
+                target: `${emails.length} users`,
+                jobId: `emergency_broadcast:${ticket.ticket_number}:${Date.now()}`
+            });
         }
     } catch (err) {
         logger.error(`❌ Failed to send emergency broadcast: ${err.message}`);
@@ -665,8 +643,10 @@ export const sendEmergencyClaimedBroadcast = async (ticket, claimedByName) => {
                   </div>
                 `
             };
-            await transporter.sendMail(mailOptions);
-            logger.info(`📧 Emergency Claimed broadcast email sent to ${emails.length} users.`);
+            await enqueueOutboundEmail('emergency_claimed_broadcast', mailOptions, {
+                target: `${emails.length} users`,
+                jobId: `emergency_claimed_broadcast:${ticket.ticket_number}:${Date.now()}`
+            });
         }
     } catch (err) {
         logger.error(`❌ Failed to send emergency claimed broadcast: ${err.message}`);
@@ -709,7 +689,7 @@ export const sendWelcomeEmail = async (user, plainPassword) => {
 
     try {
         await transporter.sendMail(mailOptions);
-        logger.info(`📧 Welcome email sent to ${user.email}`);
+        logger.info(mailLogColors.outbound(`📧 OUTBOUND welcome email sent to ${user.email}`));
     } catch (error) {
         logger.error(`❌ Failed to send welcome email to ${user.email}: ${error.message}`);
     }
@@ -755,7 +735,7 @@ export const sendForgotPasswordEmail = async (user, resetLink) => {
 
     try {
         await transporter.sendMail(mailOptions);
-        logger.info(`📧 Forgot password email sent to ${user.email}`);
+        logger.info(mailLogColors.outbound(`📧 OUTBOUND forgot password email sent to ${user.email}`));
     } catch (error) {
         logger.error(`❌ Failed to send forgot password email to ${user.email}: ${error.message}`);
     }

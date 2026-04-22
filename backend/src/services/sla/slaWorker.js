@@ -65,7 +65,7 @@ async function handleWarning(pool, ticket) {
     
     await pool.query(
         `INSERT INTO sla_event_logs (ticket_id, event_type, note) 
-         VALUES (?, 'creation', 'Pre-breach warning triggered')`, // Reusing type for simplicity
+         VALUES (?, 'pre_breach_warning', 'Pre-breach warning triggered')`,
         [ticket.id]
     );
 

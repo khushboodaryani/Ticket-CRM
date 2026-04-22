@@ -1,4 +1,5 @@
 import connectDB from "../../db/index.js";
+import { logger } from "../../logger.js";
 import { createNotification } from "../notifications/notificationController.js";
 import { broadcast } from "../../services/socketService.js";
 

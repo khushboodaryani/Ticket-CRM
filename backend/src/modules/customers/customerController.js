@@ -1,6 +1,7 @@
 // modules/customers/customerController.js
 import connectDB from "../../db/index.js";
 import { generateCode } from "../../services/generateCode.js";
+import { extractDomainFromEmail, isPublicEmailDomain } from "../../utils/domainUtils.js";
 
 // GET /api/customers
 export const getCustomers = async (req, res) => {
@@ -109,17 +110,9 @@ export const createCustomer = async (req, res) => {
         }
 
         // 4. Auto-domain mapping
-        const PUBLIC_DOMAINS = new Set([
-            'gmail.com', 'yahoo.com', 'yahoo.co.in', 'outlook.com', 'hotmail.com',
-            'live.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
-            'protonmail.com', 'proton.me', 'zoho.com', 'zoho.in',
-            'yandex.com', 'mail.com', 'gmx.com', 'gmx.net',
-            'rediffmail.com', 'msn.com', 'mail.ru',
-            'googlemail.com', 'fastmail.com', 'tutanota.com',
-        ]);
         if (email && email.includes('@')) {
-            const domain = email.split('@')[1].toLowerCase().trim();
-            if (domain && !PUBLIC_DOMAINS.has(domain)) {
+            const domain = extractDomainFromEmail(email);
+            if (domain && !isPublicEmailDomain(domain)) {
                 await connection.query(
                     `INSERT IGNORE INTO customer_domains (customer_id, project_id, domain) VALUES (?, NULL, ?)`,
                     [customerId, domain]
