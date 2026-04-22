@@ -52,7 +52,7 @@ process.title = 'Ticket CRM';
 const startServer = async () => {
     try {
         await new Promise((resolve, reject) => {
-            server.listen(process.env.PORT, (err) => {
+           server.listen(process.env.PORT, '0.0.0.0', (err) => {
                 if (err) return reject(err);
                 resolve();
             });
