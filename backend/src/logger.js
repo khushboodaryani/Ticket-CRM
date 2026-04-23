@@ -28,7 +28,7 @@ const fileFormat = winston.format.combine(
 );
 
 export const logger = winston.createLogger({
-    level: "info",
+    level: "debug",
     transports: [
         new winston.transports.Console({ format: consoleFormat }),
         new winston.transports.File({ filename: "logs/app.log", format: fileFormat, maxsize: 5 * 1024 * 1024, maxFiles: 3 }),

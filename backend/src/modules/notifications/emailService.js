@@ -8,9 +8,10 @@ import { publishBroadcast } from '../../services/realtimeEvents.js';
 import { transporter } from '../../services/mailTransport.js';
 import { outboundEmailQueue } from '../../queues/outboundEmailQueue.js';
 
-const REPLY_TO_EMAIL = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim();
+const SENDER_EMAIL = (process.env.SMTP_USER || process.env.EMAIL_USER || '').trim();
+const REPLY_TO_EMAIL = (process.env.IMAP_USER || SENDER_EMAIL).trim();
 const MAX_PARTICIPANT_NOTIFY = Math.max(1, parseInt(process.env.MAX_PARTICIPANT_NOTIFY || '20', 10));
-const COMPANY_NAME = process.env.COMPANY_NAME || 'Team Multycomm';
+const COMPANY_NAME = process.env.COMPANY_NAME || 'Ticket CRM Team';
 const mailLogColors = {
     outbound: (text) => `\x1b[1;92m${text}\x1b[0m`,
 };
@@ -53,7 +54,7 @@ export async function buildThreadHeaders(pool, ticketId) {
         [ticketId]
     );
 
-    const domain = process.env.EMAIL_USER?.split('@')[1] || 'multycomm.com';
+    const domain = SENDER_EMAIL?.split('@')[1] || 'ticketcrm.com';
     const newMessageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`;
     
     if (!rows.length || !rows[0].root_message_id) {
@@ -85,7 +86,7 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
     try {
         if (rootMessageId) {
             // If explicit root message provided, reply directly to it
-            const domain = process.env.EMAIL_USER?.split('@')[1] || 'multycomm.com';
+            const domain = SENDER_EMAIL?.split('@')[1] || 'ticketcrm.com';
             headers = {
                 messageId: `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`,
                 inReplyTo: rootMessageId,
@@ -146,7 +147,7 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
     }
 
     const mailOptions = {
-        from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
         subject: renderedEmail?.subject || `[${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
@@ -178,7 +179,9 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
         ${trailHtml}
 
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
-        <p style="font-size: 12px; color: #999;">Regards,<br/><strong>Team Multycomm</strong></p>
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">
+          Regards,<br/>${COMPANY_NAME}
+        </p>
       </div>
     `
     };
@@ -235,7 +238,7 @@ export const sendTicketAssignedNotification = async (ticket, customerEmail, agen
     }
 
     const mailOptions = {
-        from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
         subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
@@ -264,7 +267,7 @@ export const sendTicketAssignedNotification = async (ticket, customerEmail, agen
         <p style="font-size: 13px; color: #666;">To add more details, simply reply to this email.</p>
         ${trailHtml}
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
-        <p style="font-size: 12px; color: #999;">Regards,<br/><strong>Team Multycomm</strong></p>
+        <p style="font-size: 12px; color: #94a3b8;">Regards,<br/>${COMPANY_NAME}</p>
       </div>
     `
     };
@@ -320,7 +323,7 @@ export const sendSlaBreachNotification = async (ticket, customerEmail) => {
     }
 
     const mailOptions = {
-        from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
         subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'} - Escalated`,
@@ -350,7 +353,7 @@ export const sendSlaBreachNotification = async (ticket, customerEmail) => {
         <p style="font-size: 13px; color: #666;">We are working to resolve your issue as quickly as possible.</p>
         ${trailHtml}
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;"/>
-        <p style="font-size: 12px; color: #999;">Regards,<br/><strong>Team Multycomm</strong></p>
+        <p style="font-size: 12px; color: #94a3b8;">Regards,<br/>${COMPANY_NAME}</p>
       </div>
     `
     };
@@ -418,7 +421,7 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
         const formattedMsg = (messageBody || '').replace(/\n/g, '<br/>');
 
         const mailOptions = {
-            from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
+            from: `"Ticket CRM Support" <${SENDER_EMAIL}>`,
             replyTo: REPLY_TO_EMAIL || undefined,
             to: cappedRecipients.join(', '),
             subject: `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
@@ -479,7 +482,7 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
     const statusLabel = newStatus.replace('_', ' ').toUpperCase();
 
     const mailOptions = {
-        from: `"Support Team" <${process.env.EMAIL_USER}>`,
+        from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
         subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
@@ -506,7 +509,7 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
         
         ${trailHtml}
         
-        <p style="font-size: 13px; color: #64748b; margin-top:25px;">Regards,<br/>Team Multycomm</p>
+        <p style="font-size: 13px; color: #64748b; margin-top:25px;">Regards,<br/>${COMPANY_NAME}</p>
       </div>
     `
     };
@@ -517,10 +520,10 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
             outgoingMessageId: headers.messageId,
             inReplyTo: headers.inReplyTo,
             references: headers.references,
-            jobId: `status_update_notification:${ticket.ticket_number}:${headers.messageId}`
+            jobId: 'status_update_notification:' + ticket.ticket_number + ':' + headers.messageId
         });
     } catch (error) {
-        logger.error(`❌ Failed to send status update email: ${error.message}`);
+        logger.error(`Failed to send status update email: ${error.message}`);
     }
 };
 
@@ -563,7 +566,7 @@ export const sendEmergencyBroadcast = async (ticket) => {
         const emails = users.map(u => u.email).filter(Boolean);
         if (emails.length > 0) {
             const mailOptions = {
-                from: `"Ticket CRM Emergency" <${process.env.EMAIL_USER}>`,
+                from: `"Ticket CRM Emergency" <${SENDER_EMAIL}>`,
                 bcc: emails.join(','), // BCC to not expose everyone's email and keep headers clean
                 subject: `🚨 EMERGENCY P1 TICKET: [${ticket.ticket_number}] ${ticket.category}`,
                 headers: {
@@ -623,7 +626,7 @@ export const sendEmergencyClaimedBroadcast = async (ticket, claimedByName) => {
         if (emails.length > 0) {
             logger.info(`   -> Sending Stand-Down Email Blast to ${emails.length} recipients...`);
             const mailOptions = {
-                from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
+                from: `"Ticket CRM Support" <${SENDER_EMAIL}>`,
                 bcc: emails.join(','),
                 subject: `✅ UPDATE - P1 TICKET CLAIMED: [${ticket.ticket_number}]`,
                 headers: {
@@ -660,7 +663,7 @@ export const sendWelcomeEmail = async (user, plainPassword) => {
     if (!user.email) return;
 
     const mailOptions = {
-        from: `"Ticket CRM Admin" <${process.env.EMAIL_USER}>`,
+        from: `"Ticket CRM Admin" <${SENDER_EMAIL}>`,
         to: user.email,
         subject: `Welcome to Ticket CRM, ${user.name}!`,
         html: `
@@ -681,7 +684,7 @@ export const sendWelcomeEmail = async (user, plainPassword) => {
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;"/>
         <p style="font-size: 12px; color: #94a3b8; text-align: center;">
           Sent by Ticket CRM System<br/>
-          &copy; ${new Date().getFullYear()} Multycomm
+          &copy; ${new Date().getFullYear()} ${COMPANY_NAME}
         </p>
       </div>
     `
@@ -702,7 +705,7 @@ export const sendForgotPasswordEmail = async (user, resetLink) => {
     if (!user.email) return;
 
     const mailOptions = {
-        from: `"Ticket CRM Support" <${process.env.EMAIL_USER}>`,
+        from: `"Ticket CRM Support" <${SENDER_EMAIL}>`,
         to: user.email,
         subject: `Password Reset Request - Ticket CRM`,
         html: `
@@ -727,7 +730,7 @@ export const sendForgotPasswordEmail = async (user, resetLink) => {
         <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;"/>
         <p style="font-size: 12px; color: #94a3b8; text-align: center;">
           Sent by Ticket CRM Support<br/>
-          &copy; ${new Date().getFullYear()} Multycomm
+          &copy; ${new Date().getFullYear()} ${COMPANY_NAME}
         </p>
       </div>
     `

@@ -328,7 +328,8 @@ export const approveDomain = async (req, res) => {
                         priority: ct.priority,
                         status: 'open',
                         source: 'email',
-                        queue_id: null
+                        queue_id: null,
+                        sender_email: ct.sender
                     }
                 });
                 logger.info(`[Approval] Enterprise Pipeline triggered for ${ct.ticketNumber}`);
@@ -406,17 +407,11 @@ export const rejectDomain = async (req, res) => {
 
         // Send rejection notice to all unique senders
         try {
-            const nodemailer = await import('nodemailer');
-            const transporter = nodemailer.default.createTransport({
-                host: 'smtp.gmail.com',
-                port: 465,
-                secure: true,
-                auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASSWORD }
-            });
+            const { transporter } = await import('../../services/mailTransport.js');
 
             for (const email of senderEmails) {
                 const mailOptions = {
-                    from: `"Support Team" <${process.env.EMAIL_USER}>`,
+                    from: `"Support Team" <${process.env.SMTP_USER || process.env.EMAIL_USER}>`,
                     to: email,
                     subject: `Re: ${request.email_subject || 'Your Support Request'}`,
                     headers: {

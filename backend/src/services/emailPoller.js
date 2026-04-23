@@ -1,7 +1,8 @@
 // src/services/emailPoller.js
-// Polls Gmail via IMAP and auto-creates/threads tickets from unread emails.
+// Polls a configured IMAP inbox and auto-creates/threads tickets from unread emails.
 // v3 — Improved Duplicate Prevention (Early Flagging) and Full Participant Tracking (To+CC mapping).
 
+import 'dotenv/config';
 import imapSimple from 'imap-simple';
 import { simpleParser } from 'mailparser';
 import cron from 'node-cron';
@@ -20,6 +21,7 @@ import { publishBroadcast } from './realtimeEvents.js';
 import { PUBLIC_DOMAINS, extractDomainFromEmail, buildDomainCandidates } from '../utils/domainUtils.js';
 import { emailQueue } from '../queues/emailQueue.js';
 import { buildInboundEmailJobPayload } from './emailProcessor.js';
+import { imapConfig } from './mailTransport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +31,7 @@ const TZ = process.env.TIMEZONE || 'Asia/Kolkata';
 
 // Support inbox address — emails FROM this address should be ignored
 const SUPPORT_EMAIL = (process.env.EMAIL_USER || '').toLowerCase().trim();
-const GMAIL_POLLER_EMAIL = (process.env.GMAIL_USER || '').toLowerCase().trim();
+const POLLER_INBOX_EMAIL = (process.env.IMAP_USER || process.env.EMAIL_USER || '').toLowerCase().trim();
 
 let activeConnection = null;
 let isProcessing = false;
@@ -98,18 +100,21 @@ async function searchBootstrapMessages(connection, pollerSinceDate) {
     const searchCriteria = EMAIL_POLLER_SEARCH_MODE === 'all'
         ? ['ALL', ['SINCE', pollerSinceDate]]
         : ['UNSEEN', ['SINCE', pollerSinceDate]];
-    const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
-    const messages = await connection.search(searchCriteria, fetchOptions);
+    // Fetch only basic attributes first to avoid hanging on large mailbox downloads
+    const messages = await connection.search(searchCriteria, { bodies: ['HEADER'], markSeen: false });
     const searchLabel = EMAIL_POLLER_SEARCH_MODE === 'all' ? 'ALL' : 'UNSEEN';
 
     return { messages, searchLabel, mode: 'bootstrap' };
 }
 
-async function searchMessagesSinceCheckpoint(connection, lastSeenUid) {
-    const fetchOptions = { bodies: ['HEADER', 'TEXT', ''], markSeen: false };
+async function searchMessagesSinceCheckpoint(connection, lastSeenUid, pollerSinceDate) {
     const nextUid = Math.max(1, parseInt(lastSeenUid || 0, 10) + 1);
-    const messages = await connection.search([['UID', `${nextUid}:*`]], fetchOptions);
-    return { messages, searchLabel: `UID>${lastSeenUid}`, mode: 'checkpoint' };
+    // Fetch only basic attributes first. Filter by both UID and Date for safety.
+    const messages = await connection.search(
+        [['UID', `${nextUid}:*`], ['SINCE', pollerSinceDate]], 
+        { bodies: ['HEADER'], markSeen: false }
+    );
+    return { messages, searchLabel: `UID>${lastSeenUid} SINCE ${pollerSinceDate}`, mode: 'checkpoint' };
 }
 
 function stripHtml(html = '') {
@@ -181,7 +186,7 @@ function isAutoReply(parsed) {
  * Filter out our own support/poller addresses and the sender from a list.
  */
 function filterParticipants(emails, sender) {
-    const own = [SUPPORT_EMAIL, GMAIL_POLLER_EMAIL, sender ? sender.toLowerCase().trim() : ''];
+    const own = [SUPPORT_EMAIL, POLLER_INBOX_EMAIL, sender ? sender.toLowerCase().trim() : ''];
     return emails.filter(e => e && !own.includes(e.toLowerCase().trim()));
 }
 
@@ -277,7 +282,7 @@ export async function processEmails(connection) {
 
         let searchResult;
         if (lastSeenUid > 0) {
-            searchResult = await searchMessagesSinceCheckpoint(connection, lastSeenUid);
+            searchResult = await searchMessagesSinceCheckpoint(connection, lastSeenUid, pollerSinceDate);
         } else {
             searchResult = await searchBootstrapMessages(connection, pollerSinceDate);
         }
@@ -290,6 +295,7 @@ export async function processEmails(connection) {
             // Process oldest first so checkpoint advancement stays ordered and safe.
             messages = messages
                 .sort((a, b) => (a.attributes?.uid || 0) - (b.attributes?.uid || 0))
+                .filter(msg => (msg.attributes?.uid || 0) > (lastSeenUid || 0))
                 .slice(0, Math.max(1, MAX_MESSAGES_PER_CYCLE));
             logger.info(`[EmailPoller] Search returned ${rawCount} (${searchLabel}). Processing ${messages.length}. checkpoint=${lastSeenUid || 0}`);
         } else {
@@ -303,7 +309,16 @@ export async function processEmails(connection) {
             const messageStart = Date.now();
             const currentUid = parseInt(msg.attributes?.uid || 0, 10);
             try {
-                const jobPayload = await buildInboundEmailJobPayload(msg);
+                // LIGHTWEIGHT FETCH: Get the full raw body only for this specific UID
+                const fetchResults = await connection.search([['UID', currentUid]], { bodies: [''], markSeen: false });
+                const fullMsg = fetchResults && fetchResults[0];
+                
+                if (!fullMsg) {
+                    logger.warn(`[EmailPoller] Could not fetch raw body for UID ${currentUid}. Skipping.`);
+                    continue;
+                }
+
+                const jobPayload = await buildInboundEmailJobPayload(fullMsg);
                 await emailQueue.add(
                     'inbound_email',
                     jobPayload,
@@ -638,7 +653,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
     const senderEmail = normalizeEmail(fromRaw);
     const senderName = parsed.from?.value?.[0]?.name || senderEmail;
 
-    if (!senderEmail || senderEmail === SUPPORT_EMAIL || senderEmail === GMAIL_POLLER_EMAIL) {
+    if (!senderEmail || senderEmail === SUPPORT_EMAIL || senderEmail === POLLER_INBOX_EMAIL) {
         return { status: 'self_email', messageId };
     }
 
@@ -1061,7 +1076,8 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
                 priority: finalPriority, 
                 status: 'open', 
                 source: 'email',
-                queue_id: resolvedQueueId || null
+                queue_id: resolvedQueueId || null,
+                sender_email: senderEmail
             }
         });
         
@@ -1118,12 +1134,12 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
 }
 
 export async function startEmailPoller() {
-    const gmailUser = process.env.GMAIL_USER;
-    const gmailPass = (process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_PASSWORD)?.trim();
-    const smtpUser = (process.env.EMAIL_USER || '').trim().toLowerCase();
-    const pollerUser = (gmailUser || '').trim().toLowerCase();
-    if (!gmailUser || !gmailPass) {
-        logger.error('[EmailPoller] Missing GMAIL_USER or GMAIL_APP_PASSWORD in environment.');
+    const pollerUser = (imapConfig.user || '').trim().toLowerCase();
+    const pollerPass = (imapConfig.pass || '').replace(/\s/g, ''); // Strip all spaces for Gmail/IMAP compatibility
+    const smtpUser = (process.env.SMTP_USER || process.env.EMAIL_USER || '').trim().toLowerCase();
+    const gmailUser = pollerUser;
+    if (!pollerUser || !pollerPass) {
+        logger.error('[EmailPoller] Missing IMAP_USER or IMAP_PASS in environment.');
         return;
     }
     if (smtpUser && pollerUser && smtpUser !== pollerUser) {
@@ -1131,7 +1147,16 @@ export async function startEmailPoller() {
     }
 
     const config = {
-        imap: { user: gmailUser, password: gmailPass, host: 'imap.gmail.com', port: 993, tls: true, tlsOptions: { rejectUnauthorized: false }, authTimeout: 15000 },
+        imap: { 
+            user: pollerUser, 
+            password: pollerPass, 
+            host: imapConfig.host, 
+            port: imapConfig.port, 
+            tls: imapConfig.tls, 
+            tlsOptions: { rejectUnauthorized: false }, 
+            authTimeout: 15000,
+            debug: (msg) => { if (msg.includes('AUTH') || msg.includes('LOG')) logger.debug(`[IMAP-RAW] ${msg}`); }
+        },
         onmail: function () {
             if (activeConnection) {
                 logger.debug('[EmailPoller] New mail event triggered.');

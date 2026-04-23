@@ -24,7 +24,11 @@ export const initWorkflowEngine = () => {
         // GUARANTEED Step 7: Always send acknowledgment, even if workflow failed
         // This runs AFTER the pipeline completes (success or failure)
         try {
-            await handleTicketCreatedNotification({ ticketId: data.ticketId });
+            // NEW: Pass the actual sender_email if available from the trigger payload
+            await handleTicketCreatedNotification({ 
+                ticketId: data.ticketId, 
+                senderEmail: data.payload?.sender_email 
+            });
         } catch (notifErr) {
             logger.error(`❌ Acknowledgment notification failed for Ticket #${data.ticketId}: ${notifErr.message}`);
         }
@@ -282,7 +286,7 @@ export function evaluateConditions(conditions, payload) {
  * Handle sending acknowledgement emails for new tickets
  * Fetches the FINAL state after workflows have finished.
  */
-async function handleTicketCreatedNotification({ ticketId }) {
+async function handleTicketCreatedNotification({ ticketId, senderEmail }) {
     const pool = connectDB();
     const [rows] = await pool.query(
         `SELECT t.*, c.email as customer_email 
@@ -293,11 +297,18 @@ async function handleTicketCreatedNotification({ ticketId }) {
     );
 
     const ticket = rows[0];
-    if (ticket && ticket.customer_email) {
-        const { sendTicketNotification } = await import("../notifications/emailService.js");
-        // This now carries the accurate, recalculated ETR!
-        await sendTicketNotification(ticket, ticket.customer_email);
-        logger.info(`📧 FINAL Acknowledgement sent to ${ticket.customer_email} for Ticket ${ticket.ticket_number}`);
+    if (ticket) {
+        // PRIORITIZE: Use the personal senderEmail first, fall back to Customer primary email
+        const targetRecipient = senderEmail || ticket.customer_email;
+
+        if (targetRecipient) {
+            const { sendTicketNotification } = await import("../notifications/emailService.js");
+            // This now carries the accurate, recalculated ETR!
+            await sendTicketNotification(ticket, targetRecipient);
+            logger.info(`📧 FINAL Acknowledgement sent to ${targetRecipient} for Ticket ${ticket.ticket_number}`);
+        } else {
+            logger.warn(`[Workflow] No recipient found for Ticket ${ticketId} acknowledgement.`);
+        }
     }
 }
 

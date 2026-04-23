@@ -1,25 +1,13 @@
 // src/services/emailService.js
-import nodemailer from 'nodemailer';
 import { logger } from '../logger.js';
+import { transporter } from './mailTransport.js';
 
 const EMAIL_CONFIG = {
-    user: process.env.EMAIL_USER || null,
-    pass: process.env.EMAIL_PASSWORD || null,
-    enabled: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD)
+    user: process.env.SMTP_USER || process.env.EMAIL_USER || null,
+    pass: process.env.SMTP_PASS || process.env.EMAIL_PASSWORD || null,
+    enabled: !!((process.env.SMTP_USER || process.env.EMAIL_USER) && (process.env.SMTP_PASS || process.env.EMAIL_PASSWORD))
 };
-
-let transporter = null;
-if (EMAIL_CONFIG.enabled) {
-    transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
-        auth: {
-            user: EMAIL_CONFIG.user,
-            pass: EMAIL_CONFIG.pass
-        }
-    });
-}
+const SENDER_EMAIL = EMAIL_CONFIG.user;
 
 /**
  * Send notification to customer about new ticket
@@ -28,7 +16,7 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
     if (!customerEmail) return;
 
     const mailOptions = {
-        from: `"Ticket CRM" <${process.env.EMAIL_USER}>`,
+        from: `"Ticket CRM" <${SENDER_EMAIL}>`,
         to: customerEmail,
         subject: `[${ticket.ticket_number}] Ticket Created: ${ticket.category}`,
         html: `

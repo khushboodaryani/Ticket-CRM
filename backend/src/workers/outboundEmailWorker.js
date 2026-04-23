@@ -6,6 +6,7 @@ import { persistQueuedOutboundSuccess } from '../modules/notifications/emailPers
 
 let worker;
 
+
 function printOutboundTable(rows) {
     if (!rows?.length || typeof console.table !== 'function') return;
     try {
@@ -43,7 +44,7 @@ export function startOutboundEmailWorker() {
             connection: redis,
             concurrency: 5,
             limiter: {
-                max: 20,
+                max: 100,
                 duration: 60000
             }
         }

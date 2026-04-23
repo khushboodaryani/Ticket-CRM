@@ -1,28 +1,19 @@
 // src/modules/conversations/adapters/emailAdapter.js
 // Sends agent replies back to customers via email
 
-import nodemailer from 'nodemailer';
 import { logger } from '../../../logger.js';
 import { logOutgoingEmail } from '../../notifications/emailPersistence.js';
 import connectDB from '../../../db/index.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { transporter } from '../../../services/mailTransport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ATTACHMENT_DIR = path.resolve(__dirname, '../../../../public/attachments');
 
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD
-    }
-});
-
-const REPLY_TO_EMAIL = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim();
+const SENDER_EMAIL = (process.env.SMTP_USER || process.env.EMAIL_USER || '').trim();
+const REPLY_TO_EMAIL = (process.env.IMAP_USER || SENDER_EMAIL).trim();
 
 /**
  * Build a full chronological conversation trail for inclusion in outgoing emails.
@@ -194,7 +185,7 @@ export const send = async (customerEmail, data) => {
             [convId]
         );
 
-        const domain = process.env.EMAIL_USER?.split('@')[1] || 'multycomm.com';
+        const domain = SENDER_EMAIL?.split('@')[1] || 'multycomm.com';
         const newMessageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`;
         let inReplyTo = ticket.root_message_id;
         let references = ticket.root_message_id;
@@ -251,7 +242,7 @@ export const send = async (customerEmail, data) => {
         }
 
         const mailOptions = {
-            from: `"Support Team" <${process.env.EMAIL_USER}>`,
+            from: `"Support Team" <${SENDER_EMAIL}>`,
             replyTo: REPLY_TO_EMAIL || undefined,
             to: customerEmail,
             cc: ccList.length ? ccList.join(', ') : undefined,
