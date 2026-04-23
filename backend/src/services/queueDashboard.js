@@ -24,6 +24,9 @@ export function mountQueueDashboard(app) {
         serverAdapter
     });
 
+    // Redirect /admin/queues to /admin/queues/ so relative assets load correctly
+    app.get(routePath, (req, res) => res.redirect(`${routePath}/`));
+    
     app.use(routePath, serverAdapter.getRouter());
     isMounted = true;
     logger.info(`[BullBoard] Dashboard mounted at ${routePath}`);

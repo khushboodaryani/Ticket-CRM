@@ -34,6 +34,7 @@ import { mountQueueDashboard } from "./services/queueDashboard.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+app.set('trust proxy', true);
 
 const colorizeHttp = {
     dim: (text) => `\x1b[90m${text}\x1b[0m`,
