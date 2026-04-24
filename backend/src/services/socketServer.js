@@ -22,7 +22,8 @@ export const initSocket = (server) => {
         logger.info(`🔌 New connection: ${socket.id}`);
 
         socket.on("join", async (userId) => {
-            if (userId) {
+            // Only update DB for real users (numeric IDs), skip for guest strings
+            if (userId && !isNaN(userId)) {
                 socket.userId = userId;
                 socket.join(`user_${userId}`);
                 logger.info(`👤 User ${userId} joined room user_${userId}`);
@@ -66,7 +67,7 @@ export const initSocket = (server) => {
 
         // Heartbeat ACK from client
         socket.on("heartbeat_ack", async (userId) => {
-            if (userId) {
+            if (userId && !isNaN(userId)) {
                 try {
                     const pool = connectDB();
                     await pool.query(
