@@ -154,18 +154,27 @@ export const handleOutbound = async (conversationId, messageData) => {
                 }
                 break;
             case 'email':
-                // For email, send reply to customer's email address
+                // For email, prefer the actual thread starter stored on the conversation.
+                const [emailRecipientRows] = await pool.query(
+                    `SELECT email FROM conversation_participants
+                     WHERE conversation_id = ? AND type = 'to'
+                     ORDER BY id ASC LIMIT 1`,
+                    [conversationId]
+                );
                 const [emailCust] = await pool.query(
                     "SELECT c.email FROM tickets t JOIN customers c ON t.customer_id = c.id WHERE t.id = ?",
                     [conv[0].ticket_id]
                 );
-                if (emailCust.length && emailCust[0].email) {
-                    await emailAdapter.send(emailCust[0].email, {
+                const emailRecipient = emailRecipientRows[0]?.email || emailCust[0]?.email || null;
+                if (emailRecipient) {
+                    await emailAdapter.send(emailRecipient, {
                         message: messageData.message,
                         ticketId: conv[0].ticket_id,
                         senderId: messageData.senderId,
                         messageId: messageData.messageId
                     });
+                } else {
+                    logger.warn(`[MessagingService] No email recipient found for conversation=${conversationId} ticket=${conv[0].ticket_id}`);
                 }
                 break;
             default:

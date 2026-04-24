@@ -224,13 +224,16 @@ export const addMessage = async (req, res) => {
 
         // Trigger Outbound Channel Adapter if not internal
         if (!isInternal) {
-            import("../../services/messagingService.js").then(m => {
-                m.handleOutbound(conversation.id, { 
+            try {
+                const m = await import("../../services/messagingService.js");
+                await m.handleOutbound(conversation.id, { 
                     message: body,
                     senderId: req.user.userId,
                     messageId: messageId
                 });
-            }).catch(e => console.error("Outbound trigger failed:", e));
+            } catch (e) {
+                logger.error(`[Conversation] Outbound trigger failed for ticket=${ticketId} conversation=${conversation.id} message=${messageId}: ${e.message}`);
+            }
         }
 
         // Log to ticket activity

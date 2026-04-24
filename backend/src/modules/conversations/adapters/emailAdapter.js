@@ -151,8 +151,10 @@ export const send = async (customerEmail, data) => {
 
         // 1. Fetch ticket and conversation metadata for threading
         const [tickets] = await pool.query(
-            `SELECT t.ticket_number, t.subject, t.category, t.priority, c.id as conv_id, c.root_message_id
+            `SELECT t.ticket_number, t.subject, t.category, t.priority, cust.email as customer_email,
+                    c.id as conv_id, c.root_message_id, c.cc_emails
              FROM tickets t
+             LEFT JOIN customers cust ON cust.id = t.customer_id
              LEFT JOIN conversations c ON c.ticket_id = t.id AND c.source_channel = 'email'
              WHERE t.id = ? LIMIT 1`,
             [data.ticketId]
@@ -197,17 +199,51 @@ export const send = async (customerEmail, data) => {
         }
 
         // 3. Load & Sync Outbound Participants (Relational Model)
+        const [primaryRecipients] = await pool.query(
+            "SELECT email FROM conversation_participants WHERE conversation_id = ? AND type = 'to' ORDER BY id ASC",
+            [convId]
+        );
         const [participants] = await pool.query(
             "SELECT email FROM conversation_participants WHERE conversation_id = ? AND type = 'cc'",
             [convId]
         );
-        const ccList = participants.map(p => p.email).filter(Boolean);
+        const explicitCcSet = new Set(
+            String(ticket.cc_emails || '')
+                .split(',')
+                .map(email => email.trim().toLowerCase())
+                .filter(Boolean)
+        );
+        const resolvedPrimaryRecipient = primaryRecipients[0]?.email || customerEmail;
+        const ccList = participants
+            .map(p => (p.email || '').trim().toLowerCase())
+            .filter(Boolean)
+            .filter(email => email !== String(resolvedPrimaryRecipient || '').trim().toLowerCase());
+        const customerPrimaryEmail = String(ticket.customer_email || '').trim().toLowerCase();
+        const shouldDropStalePrimaryCc = explicitCcSet.size === 0
+            && customerPrimaryEmail
+            && customerPrimaryEmail !== String(resolvedPrimaryRecipient || '').trim().toLowerCase();
+        const sanitizedCcList = ccList.filter(email => {
+            if (!shouldDropStalePrimaryCc) return true;
+            return email !== customerPrimaryEmail;
+        });
+
+        if (shouldDropStalePrimaryCc && ccList.includes(customerPrimaryEmail)) {
+            await pool.query(
+                "DELETE FROM conversation_participants WHERE conversation_id = ? AND email = ? AND type = 'cc'",
+                [convId, customerPrimaryEmail]
+            );
+            logger.info(`[EmailAdapter] Removed stale primary-email CC ${customerPrimaryEmail} from conversation ${convId}`);
+        }
 
         // Store everyone we're sending TO + CC so we recognize them if they reply later
         // OPT-OUT PROTECTION: Check the removals table first to avoid re-adding unsubscribed users
-        const recipientsToSync = [customerEmail, ...ccList].filter(Boolean);
-        for (const email of recipientsToSync) {
-            const normalized = email.toLowerCase().trim();
+        const recipientsToSync = [
+            { email: resolvedPrimaryRecipient, type: 'to' },
+            ...sanitizedCcList.map(email => ({ email, type: 'cc' }))
+        ].filter(r => r.email);
+
+        for (const recipient of recipientsToSync) {
+            const normalized = recipient.email.toLowerCase().trim();
             const [removals] = await pool.query(
                 "SELECT id FROM conversation_participant_removals WHERE conversation_id = ? AND email = ? LIMIT 1",
                 [convId, normalized]
@@ -215,8 +251,8 @@ export const send = async (customerEmail, data) => {
 
             if (!removals.length) {
                 await pool.query(
-                    "INSERT IGNORE INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'cc')",
-                    [convId, normalized]
+                    "INSERT IGNORE INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, ?)",
+                    [convId, normalized, recipient.type]
                 );
             } else {
                 logger.info(`[EmailAdapter] Skipping opt-out recipient: ${normalized}`);
@@ -244,8 +280,8 @@ export const send = async (customerEmail, data) => {
         const mailOptions = {
             from: `"Support Team" <${SENDER_EMAIL}>`,
             replyTo: REPLY_TO_EMAIL || undefined,
-            to: customerEmail,
-            cc: ccList.length ? ccList.join(', ') : undefined,
+            to: resolvedPrimaryRecipient,
+            cc: sanitizedCcList.length ? sanitizedCcList.join(', ') : undefined,
             subject: `Re: [${ticket.ticket_number}] ${subjectLine}`,
             headers: {
                 'Message-ID': newMessageId,
@@ -306,14 +342,14 @@ export const send = async (customerEmail, data) => {
                     `UPDATE conversation_messages SET is_sent = 1 WHERE id = ?`,
                     [data.messageId]
                 );
-                logger.info(`📧 [EmailAdapter] Async Reply successfully delivered: ${newMessageId}`);
+                logger.info(`📧 [EmailAdapter] Async reply delivered to=${resolvedPrimaryRecipient} cc=${sanitizedCcList.join(',') || 'none'} messageId=${newMessageId}`);
             })
             .catch(mailErr => {
-                logger.error(`❌ [EmailAdapter] Async SMTP failed: ${mailErr.message} (DB ID: ${data.messageId})`);
+                logger.error(`❌ [EmailAdapter] Async SMTP failed: ${mailErr.message} (DB ID: ${data.messageId}, to=${resolvedPrimaryRecipient})`);
                 // is_sent remains 0 for audit/retry
             });
 
-        logger.info(`✅ [EmailAdapter] Reply headers attached to DB record ${data.messageId} and queued for delivery: ${ticket.ticket_number}`);
+        logger.info(`✅ [EmailAdapter] Reply prepared for ticket=${ticket.ticket_number} to=${resolvedPrimaryRecipient} cc=${sanitizedCcList.join(',') || 'none'} dbMessageId=${data.messageId}`);
         return { success: true, messageId: data.messageId };
 
     } catch (error) {

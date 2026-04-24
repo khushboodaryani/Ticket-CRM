@@ -94,9 +94,26 @@ async function handleBreach(pool, ticket) {
         [ticket.id]
     );
 
-    // Trigger Customer Notification
-    if (ticket.customer_email) {
-        sendSlaBreachNotification(ticket, ticket.customer_email).catch(err => 
+    // Resolve the actual thread sender — not just the company primary email.
+    // When a domain like multycomm.com is approved, ALL senders map to one Customer record.
+    // The breach notification must go to the person who actually started the thread.
+    let breachRecipient = ticket.customer_email;
+    try {
+        const [senderRows] = await pool.query(
+            `SELECT cp.email FROM conversation_participants cp
+             JOIN conversations c ON cp.conversation_id = c.id
+             WHERE c.ticket_id = ? AND cp.type = 'to'
+             ORDER BY cp.id ASC LIMIT 1`,
+            [ticket.id]
+        );
+        if (senderRows.length && senderRows[0].email) {
+            breachRecipient = senderRows[0].email;
+        }
+    } catch (lookupErr) {
+        logger.warn(`[SLA-Breach] Sender lookup failed for Ticket #${ticket.id}, using customer email: ${lookupErr.message}`);
+    }
+    if (breachRecipient) {
+        sendSlaBreachNotification(ticket, breachRecipient).catch(err =>
             logger.error(`[SLA-Breach] Failed to send customer notification: ${err.message}`)
         );
     }

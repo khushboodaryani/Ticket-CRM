@@ -56,7 +56,7 @@ export async function buildThreadHeaders(pool, ticketId) {
 
     const domain = SENDER_EMAIL?.split('@')[1] || 'ticketcrm.com';
     const newMessageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`;
-    
+
     if (!rows.length || !rows[0].root_message_id) {
         // First email in the thread
         return { messageId: newMessageId, inReplyTo: undefined, references: undefined };
@@ -101,10 +101,10 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
             // Priority is a name like "Critical", we need to find its ID for resolution
             const [prioRows] = await pool.query(`SELECT id FROM priorities WHERE name = ?`, [ticket.priority]);
             if (prioRows.length) {
-                const policy = await resolveSlaPolicy(pool, { 
-                    customerId: ticket.customer_id, 
-                    projectId: ticket.project_id, 
-                    priorityId: prioRows[0].id 
+                const policy = await resolveSlaPolicy(pool, {
+                    customerId: ticket.customer_id,
+                    projectId: ticket.project_id,
+                    priorityId: prioRows[0].id
                 });
                 if (policy?.first_response_hrs) {
                     responseTimeSec = policy.first_response_hrs * 3600;
@@ -326,7 +326,7 @@ export const sendSlaBreachNotification = async (ticket, customerEmail) => {
         from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: customerEmail,
-        subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'} - Escalated`,
+        subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
             'In-Reply-To': headers.inReplyTo,
@@ -402,7 +402,7 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
             [conv_id]
         );
         const allRecipients = new Set(participants.map(p => p.email.toLowerCase().trim()));
-        if (primary_email) allRecipients.add(primary_email.toLowerCase().trim());
+        // if (primary_email) allRecipients.add(primary_email.toLowerCase().trim());
 
         // Remove the person who just replied
         if (senderEmail) allRecipients.delete(senderEmail.toLowerCase().trim());
@@ -535,7 +535,7 @@ export const sendEmergencyBroadcast = async (ticket) => {
     try {
         // Fetch all active staff
         const [users] = await pool.query(`SELECT id, email, name FROM users WHERE is_active = 1`);
-        
+
         // 1. WebSocket Broadcast
         try {
             publishBroadcast('emergency_alert', {

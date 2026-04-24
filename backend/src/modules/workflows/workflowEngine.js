@@ -230,10 +230,13 @@ export async function processEnterpriseWorkflow(trigger, data) {
                             `SELECT t.*, c.email as customer_email FROM tickets t LEFT JOIN customers c ON t.customer_id = c.id WHERE t.id = ?`,
                             [ticketId]
                         );
-                        if (agentRow.length && ticketRow.length && ticketRow[0].customer_email) {
-                            const { sendTicketAssignedNotification } = await import("../notifications/emailService.js");
-                            sendTicketAssignedNotification(ticketRow[0], ticketRow[0].customer_email, agentRow[0].name)
-                                .catch(e => logger.error(`❌ Assignment email failed (non-blocking): ${e.message}`));
+                        if (agentRow.length && ticketRow.length) {
+                            const assignmentRecipient = payload.sender_email || ticketRow[0].customer_email;
+                            if (assignmentRecipient) {
+                                const { sendTicketAssignedNotification } = await import("../notifications/emailService.js");
+                                sendTicketAssignedNotification(ticketRow[0], assignmentRecipient, agentRow[0].name)
+                                    .catch(e => logger.error(`❌ Assignment email failed (non-blocking): ${e.message}`));
+                            }
                         }
                     } catch (notifErr) {
                         logger.error(`❌ Assignment notification lookup failed: ${notifErr.message}`);
