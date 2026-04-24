@@ -1039,7 +1039,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
 
         // Safety verification: Ensure the project_id exists before inserting, as DB wipes can cause foreign key failures
         if (resolvedProjectId) {
-            const [pCheck] = await pool.query('SELECT id FROM projects WHERE id = ?', [resolvedProjectId]);
+            const [pCheck] = await conn.query('SELECT id FROM projects WHERE id = ?', [resolvedProjectId]);
             if (!pCheck.length) resolvedProjectId = null;
         }
 
@@ -1053,7 +1053,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
         //   Emergency → P1 (level ASC = most severe)
         //   Normal    → Lowest tier in that category (level DESC = least severe default)
         const sortOrder = isEmergency ? 'ASC' : 'DESC';
-        const [prioRows] = await pool.query(
+        const [prioRows] = await conn.query(
             `SELECT id, name FROM priorities 
              WHERE category_id = ? AND is_active = 1 
              ORDER BY level ${sortOrder} LIMIT 1`,
@@ -1064,11 +1064,11 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
         const finalPriority = priorityName; // For Payload
         logger.info(`[EmailPoller] Priority resolved: keyword_cat=${categoryId} emergency=${isEmergency} → ${priorityName} (ID:${priorityId})`);
 
-        const resolvedTz = await resolveTicketTimezone(pool, { customerId, projectId: resolvedProjectId });
-        const slaPolicy = await resolveSlaPolicy(pool, { customerId, projectId: resolvedProjectId, priorityId });
-        const calendar = await getSlaCalendar(pool);
+        const resolvedTz = await resolveTicketTimezone(conn, { customerId, projectId: resolvedProjectId });
+        const slaPolicy = await resolveSlaPolicy(conn, { customerId, projectId: resolvedProjectId, priorityId });
+        const calendar = await getSlaCalendar(conn);
         const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone || TZ };
-        const calculator = new SlaCalculator(pool);
+        const calculator = new SlaCalculator(conn);
         
         const nowStr = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
         const strMoment = calculator.computeDueDate(nowStr, slaPolicy.first_response_hrs, calendarForTicket);

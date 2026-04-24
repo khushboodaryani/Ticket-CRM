@@ -415,6 +415,7 @@ export const updateTicket = async (req, res) => {
         const updates = [];
         const vals = [];
         let priorityId = null;
+        const statusProvided = Object.prototype.hasOwnProperty.call(req.body, 'status');
 
         if (category) { updates.push("category=?"); vals.push(category); }
         if (priority) { 
@@ -426,12 +427,13 @@ export const updateTicket = async (req, res) => {
             }
         }
         if (description) { updates.push("description=?"); vals.push(description); }
-        if (status) { updates.push("status=?"); vals.push(status); }
+        if (statusProvided) { updates.push("status=?"); vals.push(status); }
         if (assigned_to) { updates.push("assigned_to=?"); vals.push(assigned_to); }
         if (req.file) { updates.push("attachment_url=?"); vals.push(`/attachments/${req.file.filename}`); }
 
         const oldStatus = existing[0].status;
-        const newStatus = status;
+        const newStatus = statusProvided ? status : oldStatus;
+        const statusChanged = statusProvided && newStatus !== oldStatus;
         const now = moment().tz(existing[0].resolved_timezone || TZ);
 
         // --- ENTERPRISE SLA 2.1: Pause/Resume Logic ---
@@ -507,7 +509,7 @@ export const updateTicket = async (req, res) => {
             }, calendar);
         }
 
-        if (status === "resolved" || status === "closed") {
+        if (statusProvided && (status === "resolved" || status === "closed")) {
             updates.push("resolved_at=NOW()");
             updates.push("sla_state='completed'");
         }
@@ -551,10 +553,11 @@ export const updateTicket = async (req, res) => {
             payload: { category, priority, description, status, assigned_to }
         });
 
-        if (status && status !== existing[0].status) {
+        if (statusChanged) {
+            logger.info(`[TicketUpdate] Emitting status_changed for Ticket #${req.params.id} | old=${oldStatus} new=${newStatus}`);
             workflowEvents.emit('status_changed', {
                 ticketId: req.params.id,
-                payload: { old_status: existing[0].status, new_status: status }
+                payload: { old_status: oldStatus, new_status: newStatus }
             });
 
             // Event-driven status change is handled by workflowEngine -> status_changed

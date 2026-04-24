@@ -1,0 +1,61 @@
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=multycomm-com.20251104.gappssmtp.com; s=20251104; t=1777026576; x=1777631376; darn=multycomm.com;
+        h=mime-version:date:content-transfer-encoding:subject:reply-to:to
+         :from:auto-submitted:references:in-reply-to:message-id:from:to:cc
+         :subject:date:message-id:reply-to;
+        bh=0QamZ3sbNs5lzC0R/rl2forwfv25DZvacuQPL+QF2+0=;
+        b=dhyeAfqA4BpR8WbYdhFoYwdOh8jJAY/SR3JBYPlQ/ItrGQIq6mdxVjVnKxbklOEqb9
+         fN09y9bex/KPiFEpGijnNcqzQAQ+t6HpdAhNSP9pss+HzuZKm0pGPuUrrPa8dINLSPYd
+         GikFOg8NIrY4DrAU2W6WoqBx5BMYkBVMNRjx2Rt7tz9e3Rl8XwzZlwEjXxHWtYtLnz3W
+         /syrqlWAshwm+Epxx3/PVHa4qNYzaIIrEYtMea7KTjsR48dlqBl7+wgwNpYcNMcjeICS
+         9QrB02ioIddpQ0D7i14z4JUFyNH7u3z+xeC+0f0ynqOn6isE1b5cTjk42L4l9P8r4pqv
+         sf2Q==
+X-Google-DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=1e100.net; s=20251104; t=1777026576; x=1777631376;
+        h=mime-version:date:content-transfer-encoding:subject:reply-to:to
+         :from:auto-submitted:references:in-reply-to:message-id:x-gm-gg
+         :x-gm-message-state:from:to:cc:subject:date:message-id:reply-to;
+        bh=0QamZ3sbNs5lzC0R/rl2forwfv25DZvacuQPL+QF2+0=;
+        b=L+KG2ZllbtF4fNbTugHYzOUU+o+rS59NtvkhPPyE1zkFlFkBUEpmsC3YEizOGMn4B7
+         J1D4aU+krQMKmrgX4swx+ZouTrRwHtxI7PBg4VzfGuyS8PBUguKoHIGTplC9vKEy0oOm
+         inLUVrf/OWT1JsE/Nx31AlbVyOSLBtpCftgFOQwVsRPwz+bsAH7+uj2W9CzA60+F7wGH
+         gi1v2Jb0LRh7QAp8Isgkf4seYdDw+tr2KYw9MyGFgLgyKa/kOZa49rAXV15Vy1kJak5q
+         B66yWm2D+FTVSaQ5AHhBje+Ly7FtOfDlJHdSwo0CR0wmi1rwjJ3gc0uL8g+jiIqJCi1C
+         OHhw==
+X-Gm-Message-State: AOJu0YxSn6S7gbNgEoDIg5x25vvni/Hcpl7aaxS5iZl+BKMTh887+Ogm
+	HJtW0H2gAP41hrhiEiNxIrNyCrMdJBKYJw1sIsR0bs16dLi9LMi2Bi8LOX37x1lmCyas01oO/cP
+	xO2iDSZM=
+X-Gm-Gg: AeBDiesMC8TfppyJrXOXAPEXFTpJ8pHxnFwwkGUuDFYUFdtTQf8GgdHY5dBKQtBcsL+
+	m/cjJRV6wfxBIqlFoS7KATptNhiVf8jnBCU/+L4Lfj/TjHLdQrcVV9SLDDxnwP42knFOQXW4Arz
+	Laycb/Ssx9YHOuXOCT+O1OHLvO/mYgJxW1B3qzeWN6WiVz6RI7aO+10LYBMiFHKbzDIJ7VissS/
+	zOATPg6vDapwocMLsaUuqgZDSSX2a9pp054qt3jgkhwC53oZlJpRku0O7kRhLjQrzx9lXQuctby
+	3/+oMvuVgOVRjKD3UGpan0yMV6a3DqQO9zW8Q63wMyuGoCnmOrq7NKU9UGT28ADskadjKgVnciC
+	aw4X/YTHjcBaijWyApIyfH9Ft7Gx32Nhsu/0+Vwl6H8O3ftfqvTEv3bF3bkJLS+TcyOoRXLXaZB
+	oSGTHa2LrHrDn3GKdNfiLpT4vSwZO+RBZdSH0e0bT6Suxr
+X-Received: by 2002:a17:90b:5112:b0:35c:30a8:32a with SMTP id 98e67ed59e1d1-361403f4e8cmr30546794a91.9.1777026575665;
+        Fri, 24 Apr 2026 03:29:35 -0700 (PDT)
+Return-Path: <info@multycomm.com>
+Received: from [127.0.0.1] ([103.216.179.3])
+        by smtp.gmail.com with ESMTPSA id 98e67ed59e1d1-36141990bb6sm23783418a91.17.2026.04.24.03.29.34
+        for <mohit@multycomm.com>
+        (version=TLS1_3 cipher=TLS_AES_256_GCM_SHA384 bits=256/256);
+        Fri, 24 Apr 2026 03:29:35 -0700 (PDT)
+Message-ID: <1777026572122.ef37lc3tkyr@multycomm.com>
+In-Reply-To: <1776923971512.mx37hsvdqnj@multycomm.com>
+References:
+ <6704d3f2.050a0220.191cdc.b5bdSMTPIN_ADDED_BROKEN@mx.google.com>
+ <CADKcShijzCx1hYBBXrEji9DbQgv6Qos4oU8GiA7FVNTqBQVSPA@mail.gmail.com>
+ <002801db1956$1878bf90$496a3eb0$@multycomm.com>
+ <1776923971512.mx37hsvdqnj@multycomm.com>
+Auto-Submitted: auto-generated
+X-Auto-Response-Suppress: All
+From: Support Team <info@multycomm.com>
+To: mohit@multycomm.com
+Reply-To: info@multycomm.com
+Subject: Re: [Q-00026] FW: SpiceJet Booking PNR OEH4MG: 12 Oct 2024
+ Delhi-Dubai for MR. GOEL - Escalated
+Content-Transfer-Encoding: quoted-printable
+Date: Fri, 24 Apr 2026 10:29:32 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+

@@ -37,6 +37,29 @@ async function enqueueOutboundEmail(type, mailOptions, metadata = {}) {
     logger.info(mailLogColors.outbound(`📬 OUTBOUND ${type} queued for ${target}`));
 }
 
+async function resolvePrimaryThreadRecipient(pool, ticketId, fallbackEmail) {
+    if (!ticketId) return fallbackEmail;
+
+    try {
+        const [rows] = await pool.query(
+            `SELECT cp.email
+             FROM conversation_participants cp
+             JOIN conversations c ON cp.conversation_id = c.id
+             WHERE c.ticket_id = ? AND cp.type = 'to'
+             ORDER BY
+                CASE WHEN c.source_channel = 'email' THEN 0 ELSE 1 END,
+                cp.id ASC
+             LIMIT 1`,
+            [ticketId]
+        );
+
+        return rows[0]?.email || fallbackEmail;
+    } catch (err) {
+        logger.warn(`[EmailService] Failed to resolve primary thread recipient for ticket ${ticketId}: ${err.message}`);
+        return fallbackEmail;
+    }
+}
+
 /**
  * Helper to build threading headers for a specific ticket
  */
@@ -206,9 +229,11 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
  * Send notification to customer when their ticket is assigned to an agent
  */
 export const sendTicketAssignedNotification = async (ticket, customerEmail, agentName) => {
-    if (!customerEmail || !agentName) return;
+    if (!agentName) return;
 
     const pool = connectDB();
+    const targetRecipient = await resolvePrimaryThreadRecipient(pool, ticket?.id, customerEmail);
+    if (!targetRecipient || !agentName) return;
     let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
     let trailHtml = '';
     try {
@@ -240,7 +265,7 @@ export const sendTicketAssignedNotification = async (ticket, customerEmail, agen
     const mailOptions = {
         from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
-        to: customerEmail,
+        to: targetRecipient,
         subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
@@ -291,9 +316,9 @@ export const sendTicketAssignedNotification = async (ticket, customerEmail, agen
  * Send notification to customer when their ticket's SLA has been breached
  */
 export const sendSlaBreachNotification = async (ticket, customerEmail) => {
-    if (!customerEmail) return;
-
     const pool = connectDB();
+    const targetRecipient = await resolvePrimaryThreadRecipient(pool, ticket?.id, customerEmail);
+    if (!targetRecipient) return;
     let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
     let trailHtml = '';
     try {
@@ -325,7 +350,7 @@ export const sendSlaBreachNotification = async (ticket, customerEmail) => {
     const mailOptions = {
         from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
-        to: customerEmail,
+        to: targetRecipient,
         subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
@@ -467,9 +492,9 @@ export const sendParticipantReplyNotification = async (ticket, senderEmail, mess
  * Send notification to customer about ticket status update
  */
 export const sendTicketStatusNotification = async (ticket, customerEmail, oldStatus, newStatus) => {
-    if (!customerEmail) return;
-
     const pool = connectDB();
+    const targetRecipient = await resolvePrimaryThreadRecipient(pool, ticket?.id, customerEmail);
+    if (!targetRecipient) return;
     let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
     let trailHtml = '';
     try {
@@ -484,8 +509,8 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
     const mailOptions = {
         from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
-        to: customerEmail,
-        subject: `Re: [${ticket.ticket_number}] ${ticket.category}`,
+        to: targetRecipient,
+        subject: `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
             'In-Reply-To': headers.inReplyTo,

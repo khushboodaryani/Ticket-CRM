@@ -79,15 +79,39 @@ export async function processEnterpriseWorkflow(trigger, data) {
             "SELECT * FROM workflow_rules WHERE trigger_event = ? AND is_active = 1 ORDER BY priority DESC, id ASC",
             [trigger]
         );
+        rules.sort((a, b) => {
+            const priorityDiff = (b.priority ?? 0) - (a.priority ?? 0);
+            if (priorityDiff !== 0) return priorityDiff;
+
+            const aConditions = typeof a.conditions === 'string'
+                ? (() => {
+                    try { return JSON.parse(a.conditions); } catch { return {}; }
+                })()
+                : (a.conditions || {});
+            const bConditions = typeof b.conditions === 'string'
+                ? (() => {
+                    try { return JSON.parse(b.conditions); } catch { return {}; }
+                })()
+                : (b.conditions || {});
+
+            const specificityDiff = Object.keys(bConditions).length - Object.keys(aConditions).length;
+            if (specificityDiff !== 0) return specificityDiff;
+
+            return a.id - b.id;
+        });
 
         // Step 3d: Pick FIRST MATCH Only
         let matchedRule = null;
+        logger.info(`[Workflow] Evaluating ${rules.length} rules for Ticket #${ticketId} | sorted: priority DESC, specificity DESC, id ASC`);
         for (const rule of rules) {
             // Defensive Parsing: Ensure conditions/actions are objects
             let parsedConditions = rule.conditions;
             if (typeof parsedConditions === 'string') {
                 try { parsedConditions = JSON.parse(parsedConditions); } catch { parsedConditions = {}; }
             }
+            rule.conditions = parsedConditions;
+            const conditionKeys = Object.keys(parsedConditions || {}).length;
+            logger.debug(`[Workflow] → Checking rule #${rule.id} "${rule.name}" | priority=${rule.priority} specificity=${conditionKeys} conditions=${JSON.stringify(rule.conditions)}`);
 
             if (evaluateConditions(parsedConditions, payload)) {
                 matchedRule = rule;
@@ -95,8 +119,13 @@ export async function processEnterpriseWorkflow(trigger, data) {
                 if (typeof matchedRule.actions === 'string') {
                     try { matchedRule.actions = JSON.parse(matchedRule.actions); } catch { matchedRule.actions = []; }
                 }
+                logger.info(`[Workflow] ✔ Rule #${rule.id} "${rule.name}" matched Ticket #${ticketId} | actions=${JSON.stringify(rule.actions)}`);
                 break; 
             }
+        }
+
+        if (!matchedRule) {
+            logger.warn(`[Workflow] No rule matched Ticket #${ticketId}. Proceeding with defaults.`);
         }
 
         // Step 4: Transactional Apply
@@ -105,6 +134,8 @@ export async function processEnterpriseWorkflow(trigger, data) {
         let finalPriority = payload.priority || ticket.priority;
         let finalQueueId = payload.queue_id ?? ticket.queue_id;
         let finalStatus = payload.status || 'open';
+        let defaultQueueId = null;
+        let queueSource = 'existing';
         let runLogs = [];
 
         if (matchedRule) {
@@ -114,6 +145,7 @@ export async function processEnterpriseWorkflow(trigger, data) {
             for (const action of matchedRule.actions) {
                 if (action.type === 'route_to_queue') {
                     finalQueueId = action.value;
+                    queueSource = 'rule';
                     runLogs.push(`Routed to Queue: ${finalQueueId}`);
                 } else if (action.type === 'update_priority') {
                     finalPriority = action.value;
@@ -130,10 +162,16 @@ export async function processEnterpriseWorkflow(trigger, data) {
         if (!finalQueueId) {
             const [settings] = await conn.query("SELECT setting_value FROM system_settings WHERE setting_key = 'DEFAULT_QUEUE_ID'");
             if (settings.length) {
-                finalQueueId = parseInt(settings[0].setting_value, 10);
+                defaultQueueId = parseInt(settings[0].setting_value, 10);
+                finalQueueId = defaultQueueId;
+                queueSource = 'default';
                 runLogs.push(`Applied Default Queue: ${finalQueueId}`);
             }
         }
+        logger.info(
+            `[Workflow] Queue resolved for Ticket #${ticketId}` +
+            ` | finalQueueId=${finalQueueId} source=${queueSource}`
+        );
 
         // Step 4c: Compute SLA (Enterprise 2.1)
         const { resolveSlaPolicy, getSlaCalendar, resolveTicketTimezone } = await import("../sla/slaPolicyService.js");
@@ -149,21 +187,36 @@ export async function processEnterpriseWorkflow(trigger, data) {
             priorityId: priorityId
         });
 
-        const resolvedTz = await resolveTicketTimezone(conn, { 
-            customerId: ticket.customer_id, 
-            projectId: ticket.project_id 
-        });
+        let resolvedTz = null;
+        let calendarForTicket = null;
+        let finalEtr = null;
+        let finalStr = null;
 
-        const calendar = await getSlaCalendar(conn);
-        const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone };
-        const calculator = new SlaCalculator(conn);
-        const now = new Date();
-        const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendarForTicket);
-        const strMoment = calculator.computeDueDate(now, slaPolicy.first_response_hrs, calendarForTicket);
-        const finalEtr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
-        const finalStr = strMoment.format('YYYY-MM-DD HH:mm:ss');
+        if (!slaPolicy) {
+            logger.error(
+                `[Workflow] SLA policy is null for Ticket #${ticketId}` +
+                ` | queueId=${finalQueueId} DEFAULT_QUEUE_ID=${defaultQueueId}.` +
+                ` Skipping SLA computation. Queue or system_settings may be misconfigured.`
+            );
+            // Still persist any queue/status/priority changes already resolved above.
+            // Do NOT return early here — let the rest of the pipeline commit its work.
+        } else {
+            resolvedTz = await resolveTicketTimezone(conn, { 
+                customerId: ticket.customer_id, 
+                projectId: ticket.project_id 
+            });
 
-        runLogs.push(`SLA Recalculated: ${finalEtr} (TZ: ${resolvedTz})`);
+            const calendar = await getSlaCalendar(conn);
+            calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone };
+            const calculator = new SlaCalculator(conn);
+            const now = new Date();
+            const etrMoment = calculator.computeDueDate(now, slaPolicy.resolution_hrs, calendarForTicket);
+            const strMoment = calculator.computeDueDate(now, slaPolicy.first_response_hrs, calendarForTicket);
+            finalEtr = etrMoment.format("YYYY-MM-DD HH:mm:ss");
+            finalStr = strMoment.format('YYYY-MM-DD HH:mm:ss');
+
+            runLogs.push(`SLA Recalculated: ${finalEtr} (TZ: ${resolvedTz})`);
+        }
 
         // Step 4d: Atomic Save
         await conn.query(
@@ -179,7 +232,7 @@ export async function processEnterpriseWorkflow(trigger, data) {
                 sla_version = ?,
                 workflow_processed = 1 
              WHERE id = ?`,
-            [finalPriority, priorityId, finalQueueId, finalStatus, finalStr, finalEtr, resolvedTz, slaPolicy.id, slaPolicy.version, ticketId]
+            [finalPriority, priorityId, finalQueueId, finalStatus, finalStr, finalEtr, resolvedTz, slaPolicy?.id || null, slaPolicy?.version || null, ticketId]
         );
 
         // Step 4e: Rich Activity Trace (for UI visibility)
@@ -205,7 +258,9 @@ export async function processEnterpriseWorkflow(trigger, data) {
 
         try {
             const { jobManager } = await import("../../services/sla/jobManager.js");
-            await jobManager.scheduleJobs({ id: ticketId, etr: finalEtr, resolved_timezone: resolvedTz }, calendarForTicket);
+            if (finalEtr && calendarForTicket) {
+                await jobManager.scheduleJobs({ id: ticketId, etr: finalEtr, resolved_timezone: resolvedTz }, calendarForTicket);
+            }
         } catch (scheduleErr) {
             logger.error(`[Workflow] Failed to schedule SLA jobs for ticket ${ticketId}: ${scheduleErr.message}`);
         }
@@ -336,7 +391,7 @@ async function handleStatusChangeNotification(data) {
     );
 
     const ticket = rows[0];
-    if (ticket && ticket.customer_email) {
+    if (ticket) {
         const { sendTicketStatusNotification } = await import("../notifications/emailService.js");
         await sendTicketStatusNotification(ticket, ticket.customer_email, old_status, new_status);
     }
