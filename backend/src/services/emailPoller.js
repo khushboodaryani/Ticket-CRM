@@ -50,12 +50,14 @@ const PARTICIPANT_FALLBACK_WINDOW_HOURS = Math.max(1, parseInt(process.env.EMAIL
 const STRICT_SUBJECT_PARTICIPANT_MATCH = String(process.env.STRICT_SUBJECT_PARTICIPANT_MATCH || 'false').toLowerCase() === 'true';
 // Rolling 24-hour lookback window — recomputed each cycle so server restarts never cause missed emails.
 // The DB (email_logs) handles all deduplication; this is just an IMAP bandwidth limit.
-const POLLER_LOOKBACK_HOURS = parseInt(process.env.EMAIL_POLLER_LOOKBACK_HOURS || '24', 10);
+const POLLER_LOOKBACK_HOURS = parseInt(process.env.EMAIL_POLLER_LOOKBACK_HOURS || '24', 10); // @deprecated: checkpoint bootstrap now seeds from mailbox tail on first run
 const systemUserId = parseInt(process.env.EMAIL_SYSTEM_USER_ID || '5', 10); // Default System/Admin user ID for auto-created tickets
 const EMAIL_CYCLE_WARN_MS = Math.max(5000, parseInt(process.env.EMAIL_POLLER_CYCLE_WARN_MS || '20000', 10));
 const EMAIL_MESSAGE_WARN_MS = Math.max(1000, parseInt(process.env.EMAIL_POLLER_MESSAGE_WARN_MS || '8000', 10));
 const EMAIL_POLLER_SEARCH_MODE = String(process.env.EMAIL_POLLER_SEARCH_MODE || 'unseen').toLowerCase();
 const EMAIL_POLLER_CHECKPOINT_KEY = process.env.EMAIL_POLLER_CHECKPOINT_KEY || 'EMAIL_POLLER_LAST_UID';
+const EMAIL_POLLER_MAX_BATCHES_PER_CYCLE = Math.max(1, parseInt(process.env.EMAIL_POLLER_MAX_BATCHES_PER_CYCLE || '8', 10));
+const EMAIL_POLLER_MAX_CYCLE_MS = Math.max(10000, parseInt(process.env.EMAIL_POLLER_MAX_CYCLE_MS || '60000', 10));
 let consecutiveLockBusyCount = 0;
 
 const mailLogColors = {
@@ -96,25 +98,22 @@ async function setPollerCheckpoint(pool, uid) {
     );
 }
 
-async function searchBootstrapMessages(connection, pollerSinceDate) {
-    const searchCriteria = EMAIL_POLLER_SEARCH_MODE === 'all'
-        ? ['ALL', ['SINCE', pollerSinceDate]]
-        : ['UNSEEN', ['SINCE', pollerSinceDate]];
-    // Fetch only basic attributes first to avoid hanging on large mailbox downloads
-    const messages = await connection.search(searchCriteria, { bodies: ['HEADER'], markSeen: false });
-    const searchLabel = EMAIL_POLLER_SEARCH_MODE === 'all' ? 'ALL' : 'UNSEEN';
-
-    return { messages, searchLabel, mode: 'bootstrap' };
+async function bootstrapCheckpoint(connection, pool) {
+    const box = await connection.openBox('INBOX');
+    const uidNext = box?.uidnext || 1;
+    const seedUid = uidNext > 1 ? uidNext - 1 : 1;
+    await setPollerCheckpoint(pool, seedUid);
+    logger.info(`[EmailPoller] 🌱 Bootstrap complete. Seeded checkpoint UID=${seedUid}. Will process NEW emails only.`);
+    return seedUid;
 }
 
-async function searchMessagesSinceCheckpoint(connection, lastSeenUid, pollerSinceDate) {
-    const nextUid = Math.max(1, parseInt(lastSeenUid || 0, 10) + 1);
-    // Fetch only basic attributes first. Filter by both UID and Date for safety.
+async function searchMessagesSinceCheckpoint(connection, lastSeenUid) {
+    const nextUid = lastSeenUid + 1;
     const messages = await connection.search(
-        [['UID', `${nextUid}:*`], ['SINCE', pollerSinceDate]], 
+        [['UID', `${nextUid}:*`]],
         { bodies: ['HEADER'], markSeen: false }
     );
-    return { messages, searchLabel: `UID>${lastSeenUid} SINCE ${pollerSinceDate}`, mode: 'checkpoint' };
+    return { messages, searchLabel: `UID>=${nextUid}`, mode: 'checkpoint' };
 }
 
 function stripHtml(html = '') {
@@ -205,7 +204,7 @@ async function saveEmailAttachments(pool, messageId, attachments) {
             const storagePath = path.join(ATTACHMENT_DIR, storageName);
 
             // 1. Save buffer to disk
-            fs.writeFileSync(storagePath, att.content);
+            await fs.promises.writeFile(storagePath, att.content);
 
             // 2. Prepare metadata
             attParams.push([
@@ -257,6 +256,8 @@ export async function processEmails(connection) {
     const pool = connectDB();
     let lockAcquired = false;
     let lockConn = null;
+    let currentSearchLabel = 'not_started';
+    let checkpointUid = 0;
 
     try {
         const cycleStart = Date.now();
@@ -276,93 +277,160 @@ export async function processEmails(connection) {
         }
         consecutiveLockBusyCount = 0;
         lockAcquired = true;
-        const pollerSinceTs = Date.now() - (POLLER_LOOKBACK_HOURS * 60 * 60 * 1000);
-        const pollerSinceDate = moment(pollerSinceTs).tz(TZ).format('DD-MMM-YYYY');
         const lastSeenUid = await getPollerCheckpoint(pool);
+        checkpointUid = lastSeenUid;
 
-        let searchResult;
-        if (lastSeenUid > 0) {
-            searchResult = await searchMessagesSinceCheckpoint(connection, lastSeenUid, pollerSinceDate);
-        } else {
-            searchResult = await searchBootstrapMessages(connection, pollerSinceDate);
-        }
-
-        let messages = searchResult.messages || [];
-        const rawCount = messages.length;
-        const searchLabel = searchResult.searchLabel;
-
-        if (messages.length > 0) {
-            // Process oldest first so checkpoint advancement stays ordered and safe.
-            messages = messages
-                .sort((a, b) => (a.attributes?.uid || 0) - (b.attributes?.uid || 0))
-                .filter(msg => (msg.attributes?.uid || 0) > (lastSeenUid || 0))
-                .slice(0, Math.max(1, MAX_MESSAGES_PER_CYCLE));
-            logger.info(`[EmailPoller] Search returned ${rawCount} (${searchLabel}). Processing ${messages.length}. checkpoint=${lastSeenUid || 0}`);
-        } else {
+        if (lastSeenUid === 0) {
+            await bootstrapCheckpoint(connection, pool);
             isProcessing = false;
-            logger.info(`[EmailPoller] No eligible emails in this cycle (${searchLabel} search returned ${rawCount}). checkpoint=${lastSeenUid || 0}`);
             return;
         }
 
         const cycleRows = [];
-        for (const msg of messages) {
-            const messageStart = Date.now();
-            const currentUid = parseInt(msg.attributes?.uid || 0, 10);
-            try {
-                // LIGHTWEIGHT FETCH: Get the full raw body only for this specific UID
-                const fetchResults = await connection.search([['UID', currentUid]], { bodies: [''], markSeen: false });
-                const fullMsg = fetchResults && fetchResults[0];
-                
-                if (!fullMsg) {
-                    logger.warn(`[EmailPoller] Could not fetch raw body for UID ${currentUid}. Skipping.`);
-                    continue;
-                }
+        let cycleQueuedCount = 0;
+        let cycleFailureCount = 0;
+        let cycleBatchCount = 0;
+        let cycleBacklogEstimate = 0;
+        let currentCheckpoint = lastSeenUid;
+        let stopScanning = false;
 
-                const jobPayload = await buildInboundEmailJobPayload(fullMsg);
-                await emailQueue.add(
-                    'inbound_email',
-                    jobPayload,
-                    { jobId: `email_${jobPayload.messageId.replace(/[^a-zA-Z0-9_-]/g, '_')}` }
+        while (!stopScanning && cycleBatchCount < EMAIL_POLLER_MAX_BATCHES_PER_CYCLE) {
+            if ((Date.now() - cycleStart) >= EMAIL_POLLER_MAX_CYCLE_MS) {
+                logger.warn(
+                    `[EmailPoller] Cycle time budget reached after ${cycleBatchCount} batches. checkpoint=${currentCheckpoint}`
                 );
+                break;
+            }
 
-                // Mark as SEEN only after successful enqueue to prevent repeated mailbox scans.
-                await connection.addFlags(msg.attributes.uid, ['\\Seen']);
-                await setPollerCheckpoint(pool, currentUid);
-                const durationMs = Date.now() - messageStart;
-                cycleRows.push({
-                    uid: currentUid || '',
-                    status: 'queued',
-                    response_ms: durationMs,
-                    ticket: '',
-                    message_id: truncateForTable(jobPayload.messageId || '', 54)
-                });
-                if (durationMs > EMAIL_MESSAGE_WARN_MS) {
-                    logger.warn(`[EmailPoller] Slow email enqueue uid=${msg.attributes?.uid} duration=${durationMs}ms`);
-                } else {
-                    logger.info(`[EmailPoller] Email queued uid=${msg.attributes?.uid} duration=${durationMs}ms`);
+            const searchResult = await searchMessagesSinceCheckpoint(connection, currentCheckpoint);
+            currentSearchLabel = searchResult.searchLabel || 'unknown';
+
+            const rawMessages = searchResult.messages || [];
+            const rawCount = rawMessages.length;
+            const searchLabel = searchResult.searchLabel;
+            let messages = rawMessages.filter((msg) => (msg.attributes?.uid || 0) > currentCheckpoint);
+            const eligibleCount = messages.length;
+
+            if (eligibleCount === 0) {
+                if (rawCount > 0) {
+                    const returnedUids = rawMessages
+                        .map((msg) => parseInt(msg.attributes?.uid || 0, 10))
+                        .filter((uid) => Number.isFinite(uid) && uid > 0)
+                        .slice(0, 10)
+                        .join(',');
+                    logger.warn(
+                        `[EmailPoller] Search returned only stale/phantom UIDs for ${searchLabel}. checkpoint=${currentCheckpoint || 0} raw_count=${rawCount} returned_uids=${returnedUids || 'none'}`
+                    );
                 }
-            } catch (err) {
-                cycleRows.push({
-                    uid: currentUid || '',
-                    status: 'enqueue_failed',
-                    response_ms: Date.now() - messageStart,
-                    ticket: '',
-                    message_id: '',
-                });
-                logger.error(`[EmailPoller] Failed to enqueue email UID ${msg.attributes?.uid}: ${err.message}`);
-                // If enqueue failed, leave it UNSEEN and stop so checkpoint ordering stays safe.
+                if (cycleBatchCount === 0) {
+                    isProcessing = false;
+                    logger.info(`[EmailPoller] No eligible emails in this cycle (${searchLabel} search returned ${rawCount}, eligible=${eligibleCount}). checkpoint=${currentCheckpoint || 0}`);
+                    return;
+                }
+                logger.info(`[EmailPoller] Mailbox caught up for this cycle. search=${searchLabel} checkpoint=${currentCheckpoint || 0} raw_count=${rawCount} eligible=${eligibleCount}`);
+                break;
+            }
+
+            messages = messages
+                .sort((a, b) => (a.attributes?.uid || 0) - (b.attributes?.uid || 0))
+                .slice(0, Math.max(1, MAX_MESSAGES_PER_CYCLE));
+
+            cycleBatchCount += 1;
+            cycleBacklogEstimate = Math.max(0, eligibleCount - messages.length);
+            logger.info(
+                `[EmailPoller] Batch ${cycleBatchCount} search returned ${rawCount} (${searchLabel}). Eligible ${eligibleCount}. Processing ${messages.length}. checkpoint=${currentCheckpoint || 0} backlog_estimate=${cycleBacklogEstimate}`
+            );
+
+            let batchFailed = false;
+            for (const msg of messages) {
+                const messageStart = Date.now();
+                const currentUid = parseInt(msg.attributes?.uid || 0, 10);
+                try {
+                    const fetchResults = await connection.search([['UID', `${currentUid}:${currentUid}`]], { bodies: [''], markSeen: false });
+                    const fullMsg = fetchResults && fetchResults[0];
+
+                    if (!fullMsg) {
+                        throw new Error(`Could not fetch raw body for UID ${currentUid}`);
+                    }
+
+                    const jobPayload = await buildInboundEmailJobPayload(fullMsg);
+                    const jobId = `email_${jobPayload.messageId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+                    await emailQueue.add(
+                        'inbound_email',
+                        jobPayload,
+                        { jobId }
+                    );
+
+                    await connection.addFlags(msg.attributes.uid, ['\\Seen']);
+                    await setPollerCheckpoint(pool, currentUid);
+                    currentCheckpoint = currentUid;
+                    cycleQueuedCount += 1;
+                    const durationMs = Date.now() - messageStart;
+                    cycleRows.push({
+                        uid: currentUid || '',
+                        status: 'queued',
+                        response_ms: durationMs,
+                        ticket: '',
+                        message_id: truncateForTable(jobPayload.messageId || '', 54)
+                    });
+                    if (durationMs > EMAIL_MESSAGE_WARN_MS) {
+                        logger.warn(`[EmailPoller] Slow email enqueue uid=${msg.attributes?.uid} jobId=${jobId} duration=${durationMs}ms checkpoint=${currentCheckpoint}`);
+                    } else {
+                        logger.info(`[EmailPoller] Email queued uid=${msg.attributes?.uid} jobId=${jobId} duration=${durationMs}ms checkpoint=${currentCheckpoint}`);
+                    }
+                } catch (err) {
+                    cycleFailureCount += 1;
+                    batchFailed = true;
+                    cycleRows.push({
+                        uid: currentUid || '',
+                        status: 'enqueue_failed',
+                        response_ms: Date.now() - messageStart,
+                        ticket: '',
+                        message_id: '',
+                    });
+                    logger.error(
+                        `[EmailPoller] Failed to enqueue email UID ${msg.attributes?.uid}: ${err.message}. checkpoint=${currentCheckpoint} batch=${cycleBatchCount}`
+                    );
+                    if (err?.stack) {
+                        logger.debug(`[EmailPoller] Enqueue failure stack uid=${msg.attributes?.uid}: ${err.stack}`);
+                    }
+                    break;
+                }
+            }
+
+            if (batchFailed) {
+                stopScanning = true;
+                break;
+            }
+
+            if (eligibleCount <= messages.length) {
+                break;
+            }
+
+            if ((Date.now() - cycleStart) >= EMAIL_POLLER_MAX_CYCLE_MS) {
+                logger.warn(
+                    `[EmailPoller] Stopping after batch ${cycleBatchCount} due to cycle time budget. checkpoint=${currentCheckpoint} backlog_estimate=${cycleBacklogEstimate}`
+                );
                 break;
             }
         }
         printCycleTable(cycleRows);
         const cycleDuration = Date.now() - cycleStart;
+        logger.info(
+            `[EmailPoller] Cycle summary batches=${cycleBatchCount} queued=${cycleQueuedCount} failed=${cycleFailureCount} checkpoint_start=${lastSeenUid || 0} checkpoint_end=${currentCheckpoint || 0} backlog_estimate=${cycleBacklogEstimate} duration=${cycleDuration}ms`
+        );
         if (cycleDuration > EMAIL_CYCLE_WARN_MS) {
             logger.warn(`[EmailPoller] Slow cycle completed in ${cycleDuration}ms`);
         } else {
             logger.info(`[EmailPoller] Cycle completed in ${cycleDuration}ms`);
         }
     } catch (err) {
-        logger.error(`[EmailPoller] Search error: ${err.message}`);
+        logger.error(
+            `[EmailPoller] Search error: ${err.message}. checkpoint=${checkpointUid || 0} search=${currentSearchLabel}`
+        );
+        if (err?.stack) {
+            logger.debug(`[EmailPoller] Search error stack: ${err.stack}`);
+        }
     } finally {
         if (lockAcquired && lockConn) {
             try {
@@ -1010,7 +1078,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
 
         const ticketNumber = await generateTicketNumber(pool, priorityId);
         
-        const [tResult] = await pool.query(
+        const [tResult] = await conn.query(
             `INSERT INTO tickets (
                 ticket_number, subject, customer_id, project_id, queue_id, category, priority, priority_id, description, 
                 status, escalation_level, sla_state, str, etr, created_by, assigned_to, source, assignment_source,
