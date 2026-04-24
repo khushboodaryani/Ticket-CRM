@@ -567,6 +567,21 @@ export default function TicketDetail() {
                                             </div>
                                         </div>
                                     ))}
+                                    {ticket.participants?.length > 0 && (
+                                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                            <div style={{ minWidth: 14 }} />
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>CC</div>
+                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                                    {ticket.participants.map(email => (
+                                                        <span key={email} className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
+                                                            {email}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 {/* Escalation Logs */}

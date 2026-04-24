@@ -19,7 +19,7 @@ const mailLogColors = {
 const formatDisplayValue = (value, fallback = 'N/A') => value || fallback;
 
 async function enqueueOutboundEmail(type, mailOptions, metadata = {}) {
-    const target = mailOptions.to || mailOptions.bcc || mailOptions.cc || 'unknown';
+    const target = [mailOptions.to, mailOptions.cc, mailOptions.bcc].filter(Boolean).join(', ') || 'unknown';
     await outboundEmailQueue.add(
         type,
         {
@@ -99,12 +99,15 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
     if (!customerEmail) return;
 
     const pool = connectDB();
+    const targetRecipient = await resolvePrimaryThreadRecipient(pool, ticket?.id, customerEmail);
+    if (!targetRecipient) return;
     const formattedDescription = ticket.description
         ? ticket.description.replace(/\n/g, '<br/>').replace(/\*/g, '')
         : '';
 
     let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
     let trailHtml = '';
+    let ccList = [];
     let responseTimeSec = 900; // default 15 minutes
     try {
         if (rootMessageId) {
@@ -119,6 +122,17 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
             headers = await buildThreadHeaders(pool, ticket.id);
         }
         if (ticket.id) trailHtml = await getConversationTrailHtml(pool, ticket.id);
+        if (ticket.id) {
+            const [participantRows] = await pool.query(
+                `SELECT p.email FROM conversation_participants p 
+                 JOIN conversations c ON p.conversation_id = c.id 
+                 WHERE c.ticket_id = ?`,
+                [ticket.id]
+            );
+            ccList = participantRows
+                .map(p => p.email)
+                .filter(e => e && e.toLowerCase() !== targetRecipient?.toLowerCase());
+        }
 
         if (ticket.priority) {
             // Priority is a name like "Critical", we need to find its ID for resolution
@@ -172,7 +186,8 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
     const mailOptions = {
         from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
-        to: customerEmail,
+        to: targetRecipient,
+        cc: ccList.length ? ccList.join(', ') : undefined,
         subject: renderedEmail?.subject || `[${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
@@ -236,9 +251,21 @@ export const sendTicketAssignedNotification = async (ticket, customerEmail, agen
     if (!targetRecipient || !agentName) return;
     let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
     let trailHtml = '';
+    let ccList = [];
     try {
         headers = await buildThreadHeaders(pool, ticket.id);
         if (ticket.id) trailHtml = await getConversationTrailHtml(pool, ticket.id);
+        if (ticket.id) {
+            const [participantRows] = await pool.query(
+                `SELECT p.email FROM conversation_participants p 
+                 JOIN conversations c ON p.conversation_id = c.id 
+                 WHERE c.ticket_id = ?`,
+                [ticket.id]
+            );
+            ccList = participantRows
+                .map(p => p.email)
+                .filter(e => e && e.toLowerCase() !== targetRecipient?.toLowerCase());
+        }
     } catch (err) {
         logger.error(`[EmailService] Trail/header build failed for assignment notification ${ticket.ticket_number}: ${err.message}`);
     }
@@ -266,6 +293,7 @@ export const sendTicketAssignedNotification = async (ticket, customerEmail, agen
         from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: targetRecipient,
+        cc: ccList.length ? ccList.join(', ') : undefined,
         subject: renderedEmail?.subject || `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,
@@ -497,9 +525,21 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
     if (!targetRecipient) return;
     let headers = { messageId: undefined, inReplyTo: undefined, references: undefined };
     let trailHtml = '';
+    let ccList = [];
     try {
         headers = await buildThreadHeaders(pool, ticket.id);
         trailHtml = await getConversationTrailHtml(pool, ticket.id);
+        if (ticket.id) {
+            const [participantRows] = await pool.query(
+                `SELECT p.email FROM conversation_participants p 
+                 JOIN conversations c ON p.conversation_id = c.id 
+                 WHERE c.ticket_id = ?`,
+                [ticket.id]
+            );
+            ccList = participantRows
+                .map(p => p.email)
+                .filter(e => e && e.toLowerCase() !== targetRecipient?.toLowerCase());
+        }
     } catch (trailErr) {
         logger.error(`[EmailService] Trail/header build failed for status notification ${ticket.ticket_number}: ${trailErr.message}`);
     }
@@ -510,6 +550,7 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
         from: `"Support Team" <${SENDER_EMAIL}>`,
         replyTo: REPLY_TO_EMAIL || undefined,
         to: targetRecipient,
+        cc: ccList.length ? ccList.join(', ') : undefined,
         subject: `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
         headers: {
             'Message-ID': headers.messageId,

@@ -233,6 +233,14 @@ export const getTicketById = async (req, res) => {
             [req.params.id]
         );
 
+        const [participants] = await pool.query(
+            `SELECT p.email FROM conversation_participants p
+             JOIN conversations c ON p.conversation_id = c.id
+             WHERE c.ticket_id = ?`,
+            [req.params.id]
+        );
+        rows[0].participants = participants.map(p => p.email);
+
         return res.json({ success: true, ticket: rows[0], escalation_logs: logs, activity, tasks });
     } catch (err) {
         console.error("getTicketById:", err);
