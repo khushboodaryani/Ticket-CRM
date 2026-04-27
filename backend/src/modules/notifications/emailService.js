@@ -132,6 +132,7 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
             ccList = participantRows
                 .map(p => p.email)
                 .filter(e => e && e.toLowerCase() !== targetRecipient?.toLowerCase());
+            logger.info(`[EmailService] Ticket notification recipients for ${ticket.ticket_number}: to=${targetRecipient || 'none'} raw_participants=${JSON.stringify(participantRows)} ccList=${JSON.stringify(ccList)}`);
         }
 
         if (ticket.priority) {
@@ -223,6 +224,14 @@ export const sendTicketNotification = async (ticket, customerEmail, rootMessageI
       </div>
     `
     };
+
+    console.log('📧 FINAL EMAIL PAYLOAD', {
+        ticket_number: ticket.ticket_number,
+        to: mailOptions.to || null,
+        cc: mailOptions.cc || null,
+        subject: mailOptions.subject || null,
+        participant_rows: ccList
+    });
 
     try {
         await enqueueOutboundEmail('ticket_notification', mailOptions, {

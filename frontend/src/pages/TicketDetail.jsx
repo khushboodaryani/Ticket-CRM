@@ -272,6 +272,11 @@ export default function TicketDetail() {
     const priColor = PRIORITY_COLORS[ticket.priority] || '#6b7280'
     const escColor = ESCALATION_COLORS[ticket.escalation_level] || '#3b82f6'
     const doneTasks = tasks.filter(t => t.is_done).length
+    const typedParticipants = Array.isArray(ticket.participants) ? ticket.participants : []
+    const senderParticipant = typedParticipants.find(p => p?.type === 'to' && p?.email)
+    const ccParticipants = typedParticipants
+        .filter(p => p?.type === 'cc' && p?.email)
+        .filter(p => p.email !== senderParticipant?.email)
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -567,19 +572,36 @@ export default function TicketDetail() {
                                             </div>
                                         </div>
                                     ))}
-                                    {ticket.participants?.length > 0 && (
-                                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                                            <div style={{ minWidth: 14 }} />
-                                            <div style={{ flex: 1 }}>
-                                                <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>CC</div>
-                                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                                                    {ticket.participants.map(email => (
-                                                        <span key={email} className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
-                                                            {email}
-                                                        </span>
-                                                    ))}
+                                    {(senderParticipant || ccParticipants.length > 0) && (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                            {senderParticipant && (
+                                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                                    <div style={{ minWidth: 14 }} />
+                                                    <div style={{ flex: 1 }}>
+                                                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>Sender</div>
+                                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                                            <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
+                                                                {senderParticipant.email}
+                                                            </span>
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                            </div>
+                                            )}
+                                            {ccParticipants.length > 0 && (
+                                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                                                    <div style={{ minWidth: 14 }} />
+                                                    <div style={{ flex: 1 }}>
+                                                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>CC</div>
+                                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                                            {ccParticipants.map(participant => (
+                                                                <span key={`${participant.type}:${participant.email}`} className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 600 }}>
+                                                                    {participant.email}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     )}
                                 </div>
