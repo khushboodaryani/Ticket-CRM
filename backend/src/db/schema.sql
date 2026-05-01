@@ -125,6 +125,32 @@ CREATE TABLE IF NOT EXISTS ticket_activities (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
+-- 6B. EMAIL TRUST / SECURITY AUDIT
+-- Prevents outbound system mail from being re-ingested as customer replies
+-- and records rejected ticket-number spoof attempts.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS system_sent_messages (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  message_id VARCHAR(500) NOT NULL,
+  ticket_id INT UNSIGNED NULL,
+  sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_message_id (message_id),
+  INDEX idx_sent_at (sent_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS security_audit_log (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  event_type VARCHAR(100) NOT NULL,
+  sender_email VARCHAR(255),
+  ticket_number VARCHAR(50),
+  message_id VARCHAR(500),
+  details TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_event_type (event_type),
+  INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
 -- 7. SHIFTS
 -- Shift configuration for SLA calculation
 -- working_days stored as JSON array: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]

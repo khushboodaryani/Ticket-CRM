@@ -7,6 +7,7 @@ import connectDB from "../../db/index.js";
 import { logger } from "../../logger.js";
 import { createNotification } from "../notifications/notificationController.js";
 import { sendTicketNotification } from "../notifications/emailService.js";
+import { recordSystemSentMessage } from "../notifications/emailPersistence.js";
 import { getShiftAssignee } from "../../services/assignmentService.js";
 import { resolveSlaPolicy, getSlaCalendar, generateTicketNumber, resolveTicketTimezone } from "../sla/slaPolicyService.js";
 import moment from "moment-timezone";
@@ -416,7 +417,9 @@ export const rejectDomain = async (req, res) => {
                     subject: `Re: ${request.email_subject || 'Your Support Request'}`,
                     headers: {
                         'Auto-Submitted': 'auto-generated',
-                        'X-Auto-Response-Suppress': 'All'
+                        'X-Auto-Response-Suppress': 'All',
+                        'X-Source': 'internal',
+                        'X-Ticket-CRM-Origin': 'outbound'
                     },
                     html: `
                         <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto;">
@@ -437,7 +440,8 @@ export const rejectDomain = async (req, res) => {
                     `
                 };
 
-                await transporter.sendMail(mailOptions);
+                const info = await transporter.sendMail(mailOptions);
+                await recordSystemSentMessage(pool, info?.messageId, null);
                 logger.info(`[Approval] Rejection notice sent to ${email} for domain ${request.domain}`);
             }
         } catch (emailErr) {

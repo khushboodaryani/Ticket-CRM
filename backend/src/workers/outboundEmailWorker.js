@@ -26,8 +26,16 @@ export function startOutboundEmailWorker() {
                 throw new Error('Outbound email job missing mailOptions');
             }
 
-            await transporter.sendMail(mailOptions);
-            await persistQueuedOutboundSuccess(metadata || {});
+            const trustedMailOptions = {
+                ...mailOptions,
+                headers: {
+                    ...(mailOptions.headers || {}),
+                    'X-Source': 'internal',
+                    'X-Ticket-CRM-Origin': 'outbound'
+                }
+            };
+            const info = await transporter.sendMail(trustedMailOptions);
+            await persistQueuedOutboundSuccess({ ...(metadata || {}), sentMessageId: info?.messageId });
 
             const durationMs = Date.now() - startedAt;
             printOutboundTable([{
@@ -36,7 +44,7 @@ export function startOutboundEmailWorker() {
                 type: metadata?.type || job.name,
                 status: 'sent',
                 response_ms: durationMs,
-                target: metadata?.target || mailOptions.to || mailOptions.bcc || ''
+                target: metadata?.target || trustedMailOptions.to || trustedMailOptions.bcc || ''
             }]);
             logger.info(`\x1b[1;92m[OutboundEmailWorker] Sent ${metadata?.type || job.name} job=${job.id} duration=${durationMs}ms\x1b[0m`);
         },

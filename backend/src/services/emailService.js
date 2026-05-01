@@ -1,6 +1,7 @@
 // src/services/emailService.js
 import { logger } from '../logger.js';
 import { transporter } from './mailTransport.js';
+import connectDB from '../db/index.js';
 
 const EMAIL_CONFIG = {
     user: process.env.SMTP_USER || process.env.EMAIL_USER || null,
@@ -8,6 +9,36 @@ const EMAIL_CONFIG = {
     enabled: !!((process.env.SMTP_USER || process.env.EMAIL_USER) && (process.env.SMTP_PASS || process.env.EMAIL_PASSWORD))
 };
 const SENDER_EMAIL = EMAIL_CONFIG.user;
+
+function normalizeMessageId(messageId = '') {
+    return String(messageId || '').replace(/[<>]/g, '').trim();
+}
+
+function withOutboundTrustHeaders(mailOptions = {}) {
+    return {
+        ...mailOptions,
+        headers: {
+            ...(mailOptions.headers || {}),
+            'X-Source': 'internal',
+            'X-Ticket-CRM-Origin': 'outbound'
+        }
+    };
+}
+
+async function recordSystemSentMessage(messageId, ticketId = null) {
+    const cleanMsgId = normalizeMessageId(messageId);
+    if (!cleanMsgId) return;
+
+    try {
+        const pool = connectDB();
+        await pool.query(
+            `INSERT IGNORE INTO system_sent_messages (message_id, ticket_id) VALUES (?, ?)`,
+            [cleanMsgId, ticketId || null]
+        );
+    } catch (err) {
+        logger.warn(`[EmailService] Failed to record system sent message ${cleanMsgId}: ${err.message}`);
+    }
+}
 
 /**
  * Send notification to customer about new ticket
@@ -36,7 +67,8 @@ export const sendTicketNotification = async (ticket, customerEmail) => {
     };
 
     try {
-        await transporter.sendMail(mailOptions);
+        const info = await transporter.sendMail(withOutboundTrustHeaders(mailOptions));
+        await recordSystemSentMessage(info?.messageId, ticket?.id || null);
         logger.info(`📧 Notification email sent to ${customerEmail} for ticket ${ticket.ticket_number}`);
     } catch (error) {
         logger.error(`❌ Failed to send notification email: ${error.message}`);

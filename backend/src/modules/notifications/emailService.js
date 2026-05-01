@@ -7,10 +7,10 @@ import { renderNotificationTemplate, TEMPLATE_KEYS } from './templateService.js'
 import { publishBroadcast } from '../../services/realtimeEvents.js';
 import { transporter } from '../../services/mailTransport.js';
 import { outboundEmailQueue } from '../../queues/outboundEmailQueue.js';
+import { recordSystemSentMessage } from './emailPersistence.js';
 
 const SENDER_EMAIL = (process.env.SMTP_USER || process.env.EMAIL_USER || '').trim();
 const REPLY_TO_EMAIL = (process.env.IMAP_USER || SENDER_EMAIL).trim();
-const MAX_PARTICIPANT_NOTIFY = Math.max(1, parseInt(process.env.MAX_PARTICIPANT_NOTIFY || '20', 10));
 const COMPANY_NAME = process.env.COMPANY_NAME || 'Ticket CRM Team';
 const mailLogColors = {
     outbound: (text) => `\x1b[1;92m${text}\x1b[0m`,
@@ -18,12 +18,24 @@ const mailLogColors = {
 
 const formatDisplayValue = (value, fallback = 'N/A') => value || fallback;
 
+function withOutboundTrustHeaders(mailOptions = {}) {
+    return {
+        ...mailOptions,
+        headers: {
+            ...(mailOptions.headers || {}),
+            'X-Source': 'internal',
+            'X-Ticket-CRM-Origin': 'outbound'
+        }
+    };
+}
+
 async function enqueueOutboundEmail(type, mailOptions, metadata = {}) {
-    const target = [mailOptions.to, mailOptions.cc, mailOptions.bcc].filter(Boolean).join(', ') || 'unknown';
+    const trustedMailOptions = withOutboundTrustHeaders(mailOptions);
+    const target = [trustedMailOptions.to, trustedMailOptions.cc, trustedMailOptions.bcc].filter(Boolean).join(', ') || 'unknown';
     await outboundEmailQueue.add(
         type,
         {
-            mailOptions,
+            mailOptions: trustedMailOptions,
             metadata: {
                 ...metadata,
                 type,
@@ -437,92 +449,11 @@ export const sendSlaBreachNotification = async (ticket, customerEmail) => {
 
 
 /**
- * Sync participant replies across all parties (Primary Customer + CCs)
+ * Disabled privacy-risky broad participant reply fanout.
+ * Replies stay in the thread through normal To/CC mail headers instead.
  */
-export const sendParticipantReplyNotification = async (ticket, senderEmail, messageBody) => {
-    if (!ticket?.id) {
-        logger.warn('[EmailService] sendParticipantReplyNotification called without ticket.id');
-        return;
-    }
-    const pool = connectDB();
-    try {
-        const [rows] = await pool.query(
-            `SELECT c.email as primary_email, cv.id as conv_id
-             FROM tickets t
-             LEFT JOIN customers c ON t.customer_id = c.id
-             LEFT JOIN conversations cv ON cv.ticket_id = t.id AND cv.source_channel = 'email'
-             WHERE t.id = ?`,
-            [ticket.id]
-        );
-
-        if (!rows.length) return;
-        const { primary_email, conv_id } = rows[0];
-
-        // Fetch CCs from Relational Model
-        const [participants] = await pool.query(
-            "SELECT email FROM conversation_participants WHERE conversation_id = ?",
-            [conv_id]
-        );
-        const allRecipients = new Set(participants.map(p => p.email.toLowerCase().trim()));
-        // if (primary_email) allRecipients.add(primary_email.toLowerCase().trim());
-
-        // Remove the person who just replied
-        if (senderEmail) allRecipients.delete(senderEmail.toLowerCase().trim());
-
-        if (allRecipients.size === 0) return;
-
-        // Deterministic order before cap to avoid random truncation behavior.
-        const recipientList = Array.from(allRecipients).sort((a, b) => a.localeCompare(b));
-        const cappedRecipients = recipientList.slice(0, MAX_PARTICIPANT_NOTIFY);
-        if (recipientList.length > cappedRecipients.length) {
-            logger.warn(`[EmailService] Participant notification capped for ${ticket.ticket_number}: ${recipientList.length} -> ${cappedRecipients.length}`);
-        }
-
-        const headers = await buildThreadHeaders(pool, ticket.id);
-        const trailHtml = await getConversationTrailHtml(pool, ticket.id);
-        const formattedMsg = (messageBody || '').replace(/\n/g, '<br/>');
-
-        const mailOptions = {
-            from: `"Ticket CRM Support" <${SENDER_EMAIL}>`,
-            replyTo: REPLY_TO_EMAIL || undefined,
-            to: cappedRecipients.join(', '),
-            subject: `Re: [${ticket.ticket_number}] ${ticket.subject || ticket.category || 'Support Request'}`,
-            headers: {
-                'Message-ID': headers.messageId,
-                'In-Reply-To': headers.inReplyTo,
-                'References': headers.references,
-                'Auto-Submitted': 'auto-generated',
-                'X-Auto-Response-Suppress': 'All'
-            },
-            html: `
-              <div style="font-family: sans-serif; padding: 20px; color: #333;">
-                <p style="font-size: 14px; color: #475569; margin-bottom: 20px;">
-                  New update on ticket <strong>${ticket.ticket_number}</strong>:
-                </p>
-                <div style="background: #f8fafc; padding: 15px; border-left: 4px solid #3b82f6; border-radius: 4px; margin-bottom: 25px;">
-                  ${formattedMsg}
-                </div>
-                
-                ${trailHtml}
-                
-                <p style="font-size: 12px; color: #94a3b8; margin-top: 30px; border-top: 1px solid #f1f5f9; padding-top: 10px;">
-                  To reply, respond directly to this email. All participants will be notified.
-                </p>
-              </div>
-            `
-        };
-
-        await enqueueOutboundEmail('participant_reply_notification', mailOptions, {
-            ticketNumber: ticket.ticket_number,
-            outgoingMessageId: headers.messageId,
-            inReplyTo: headers.inReplyTo,
-            references: headers.references,
-            jobId: `participant_reply_notification:${ticket.ticket_number}:${headers.messageId}`
-        });
-
-    } catch (err) {
-        logger.error(`❌ Failed to send participant sync notification: ${err.message}`);
-    }
+export const sendParticipantReplyNotification = async (ticket) => {
+    logger.info(`[EmailService] Participant reply notification disabled for ticket ${ticket?.ticket_number || ticket?.id || 'unknown'}`);
 };
 
 /**
@@ -591,6 +522,7 @@ export const sendTicketStatusNotification = async (ticket, customerEmail, oldSta
 
     try {
         await enqueueOutboundEmail('status_update_notification', mailOptions, {
+            ticketId: ticket.id,
             ticketNumber: ticket.ticket_number,
             outgoingMessageId: headers.messageId,
             inReplyTo: headers.inReplyTo,
@@ -766,7 +698,8 @@ export const sendWelcomeEmail = async (user, plainPassword) => {
     };
 
     try {
-        await transporter.sendMail(mailOptions);
+        const info = await transporter.sendMail(withOutboundTrustHeaders(mailOptions));
+        await recordSystemSentMessage(connectDB(), info?.messageId, null);
         logger.info(mailLogColors.outbound(`📧 OUTBOUND welcome email sent to ${user.email}`));
     } catch (error) {
         logger.error(`❌ Failed to send welcome email to ${user.email}: ${error.message}`);
@@ -812,7 +745,8 @@ export const sendForgotPasswordEmail = async (user, resetLink) => {
     };
 
     try {
-        await transporter.sendMail(mailOptions);
+        const info = await transporter.sendMail(withOutboundTrustHeaders(mailOptions));
+        await recordSystemSentMessage(connectDB(), info?.messageId, null);
         logger.info(mailLogColors.outbound(`📧 OUTBOUND forgot password email sent to ${user.email}`));
     } catch (error) {
         logger.error(`❌ Failed to send forgot password email to ${user.email}: ${error.message}`);

@@ -2,7 +2,7 @@
 // Sends agent replies back to customers via email
 
 import { logger } from '../../../logger.js';
-import { logOutgoingEmail } from '../../notifications/emailPersistence.js';
+import { recordSystemSentMessage } from '../../notifications/emailPersistence.js';
 import connectDB from '../../../db/index.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -288,7 +288,9 @@ export const send = async (customerEmail, data) => {
                 'In-Reply-To': inReplyTo,
                 'References': references,
                 'Auto-Submitted': 'auto-generated',
-                'X-Auto-Response-Suppress': 'All'
+                'X-Auto-Response-Suppress': 'All',
+                'X-Source': 'internal',
+                'X-Ticket-CRM-Origin': 'outbound'
             },
             attachments: emailAttachments,
             html: `
@@ -336,12 +338,13 @@ export const send = async (customerEmail, data) => {
 
         // 6. ASYNC SMTP TRANSMISSION (Non-blocking Background Task)
         transporter.sendMail(mailOptions)
-            .then(async () => {
+            .then(async (info) => {
                 // Mark as successfully sent in DB
                 await pool.query(
                     `UPDATE conversation_messages SET is_sent = 1 WHERE id = ?`,
                     [data.messageId]
                 );
+                await recordSystemSentMessage(pool, info?.messageId || newMessageId, data.ticketId || ticket.id || null);
                 logger.info(`📧 [EmailAdapter] Async reply delivered to=${resolvedPrimaryRecipient} cc=${sanitizedCcList.join(',') || 'none'} messageId=${newMessageId}`);
             })
             .catch(mailErr => {

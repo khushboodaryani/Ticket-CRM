@@ -9,7 +9,7 @@ import cron from 'node-cron';
 import connectDB from '../db/index.js';
 import { logger } from '../logger.js';
 import moment from 'moment-timezone';
-import { sendTicketNotification, sendEmergencyBroadcast, sendParticipantReplyNotification } from '../modules/notifications/emailService.js';
+import { sendEmergencyBroadcast } from '../modules/notifications/emailService.js';
 import { getShiftAssignee } from './assignmentService.js';
 import { createNotification } from '../modules/notifications/notificationController.js';
 import { resolveSlaPolicy, getSlaCalendar, generateTicketNumber, resolveTicketTimezone } from '../modules/sla/slaPolicyService.js';
@@ -46,8 +46,6 @@ const MAX_BACKOFF = 300000; // 5 minutes (300s)
 const MAX_ATTEMPTS = 50;    // Absolute ceiling for safety
 const MAX_MESSAGES_PER_CYCLE = parseInt(process.env.EMAIL_POLLER_BATCH_SIZE || '25', 10);
 const EMAIL_POLLER_CRON = process.env.EMAIL_POLLER_CRON || '*/15 * * * * *';
-const PARTICIPANT_FALLBACK_WINDOW_HOURS = Math.max(1, parseInt(process.env.EMAIL_FALLBACK_WINDOW_HOURS || '720', 10));
-const STRICT_SUBJECT_PARTICIPANT_MATCH = String(process.env.STRICT_SUBJECT_PARTICIPANT_MATCH || 'false').toLowerCase() === 'true';
 // Rolling 24-hour lookback window — recomputed each cycle so server restarts never cause missed emails.
 // The DB (email_logs) handles all deduplication; this is just an IMAP bandwidth limit.
 const POLLER_LOOKBACK_HOURS = parseInt(process.env.EMAIL_POLLER_LOOKBACK_HOURS || '24', 10); // @deprecated: checkpoint bootstrap now seeds from mailbox tail on first run
@@ -127,6 +125,10 @@ function normalizeEmail(raw = '') {
 
 function normalizeMessageId(raw = '') {
     return String(raw || '').replace(/[<>]/g, '').trim();
+}
+
+function normalizeHeaderValue(value = '') {
+    return String(value || '').trim().toLowerCase();
 }
 
 function messageIdVariants(raw = '') {
@@ -721,14 +723,30 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
     const senderEmail = normalizeEmail(fromRaw);
     const senderName = parsed.from?.value?.[0]?.name || senderEmail;
 
+    const sourceHeader = normalizeHeaderValue(parsed.headers?.get('x-source'));
+    const originHeader = normalizeHeaderValue(parsed.headers?.get('x-ticket-crm-origin'));
+    if (sourceHeader === 'internal' || originHeader === 'outbound') {
+        logger.info(`[EmailPoller] Dropping internal-origin email: messageId=${messageId} sender=${senderEmail || 'unknown'}`);
+        return { status: 'drop_internal_origin', messageId };
+    }
+
     if (!senderEmail || senderEmail === SUPPORT_EMAIL || senderEmail === POLLER_INBOX_EMAIL) {
         return { status: 'self_email', messageId };
+    }
+
+    const [systemSent] = await pool.query(
+        `SELECT id FROM system_sent_messages WHERE message_id = ? LIMIT 1`,
+        [messageId]
+    );
+    if (systemSent.length) {
+        logger.info(`[EmailPoller] Dropping system-sent message confirmed by registry: messageId=${messageId} sender=${senderEmail}`);
+        return { status: 'drop_system_registry', messageId };
     }
 
     const rawSubject = (parsed.subject || 'No Subject').trim();
     const cleanSubject = rawSubject
         .replace(/^(re|fwd?|reply):\s*/i, '')
-        .replace(/\[?TKT-\d{8}-\d{4}\]?\s*/gi, '')
+        .replace(/\[?(?:TKT-\d{8}-\d{4}|[A-Z]-\d{5})\]?\s*/gi, '')
         .trim() || 'General Inquiry';
 
     const bodyText = parsed.text ? parsed.text.trim() : (parsed.html ? stripHtml(parsed.html) : '');
@@ -851,20 +869,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
             logger.error(`[EmailPoller] Socket broadcast failed for reply: ${sErr.message}`);
         }
 
-        // 6. Notify Participants (ONLY if NOT automated)
-        try {
-            if (!isAutomated) {
-                const [tRows] = await conn.query('SELECT id, ticket_number, category, priority FROM tickets WHERE id = ?', [ticketId]);
-                if (tRows.length) {
-                    sendParticipantReplyNotification(tRows[0], senderEmail, bodyText)
-                        .catch(err => logger.error(`[EmailPoller] Async participant notification failed: ${err.message}`));
-                }
-            } else {
-                logger.debug(`[EmailPoller] Suppressing participant notification for automated reply to ${ticketNumber}`);
-            }
-        } catch (err) {
-            logger.error(`[EmailPoller] Sync notification failed: ${err.message}`);
-        }
+        logger.debug(`[EmailPoller] Participant reply notification disabled for ${ticketNumber}`);
 
         if (logId) await conn.query(`UPDATE email_logs SET status='processed' WHERE id=?`, [logId]);
         logger.info(`[EmailPoller] ✅ Threaded reply to ${ticketNumber}`);
@@ -881,23 +886,55 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
         let matchedNum = null;
         let matchReason = 'none';
 
+        const verifyOwnership = async (conversationId, customerEmail, ticketNumber, reason) => {
+            const isOwner = customerEmail && customerEmail.toLowerCase().trim() === senderEmail;
+            const [participantRows] = await conn.query(
+                `SELECT id
+                 FROM conversation_participants
+                 WHERE conversation_id = ? AND LOWER(email) = LOWER(?)
+                 LIMIT 1`,
+                [conversationId, senderEmail]
+            );
+            const isParticipant = participantRows.length > 0;
+            if (isOwner || isParticipant) return true;
+
+            logger.warn(`[EmailPoller] Header match found (${ticketNumber}) but sender not owner/participant. Refusing thread. sender=${senderEmail} messageId=${messageId} reason=${reason}`);
+            return false;
+        };
+
+        const insertSecurityAudit = async (eventType, ticketNumber, details) => {
+            try {
+                await conn.query(
+                    `INSERT INTO security_audit_log (event_type, sender_email, ticket_number, message_id, details)
+                     VALUES (?, ?, ?, ?, ?)`,
+                    [eventType, senderEmail, ticketNumber, messageId, details]
+                );
+            } catch (auditErr) {
+                logger.error(`[EmailPoller] Failed to insert security audit log: ${auditErr.message}`);
+            }
+        };
+
         // --- STEP 1: Strict Header Matching (Thread IDs) ---
         if (inReplyTo) {
             const inReplyToCandidates = messageIdVariants(inReplyTo);
             const [msgMatch] = await conn.query(
-                `SELECT c.id as conv_id, c.ticket_id, t.ticket_number 
+                `SELECT c.id as conv_id, c.ticket_id, t.ticket_number, cu.email AS customer_email
                  FROM conversation_messages cm
                  JOIN conversations c ON cm.conversation_id = c.id
                  JOIN tickets t ON c.ticket_id = t.id
+                 LEFT JOIN customers cu ON cu.id = t.customer_id
                  WHERE cm.message_id IN (?) LIMIT 1`,
                 [inReplyToCandidates]
             );
             if (msgMatch.length) {
-                matchedConvId = msgMatch[0].conv_id;
-                matchedTicketId = msgMatch[0].ticket_id;
-                matchedNum = msgMatch[0].ticket_number;
-                matchReason = 'header_in_reply_to';
-                logger.debug(`[EmailPoller] Header Match (In-Reply-To): ${matchedNum}`);
+                const row = msgMatch[0];
+                if (await verifyOwnership(row.conv_id, row.customer_email, row.ticket_number, 'header_in_reply_to')) {
+                    matchedConvId = row.conv_id;
+                    matchedTicketId = row.ticket_id;
+                    matchedNum = row.ticket_number;
+                    matchReason = 'header_in_reply_to';
+                    logger.debug(`[EmailPoller] Header Match (In-Reply-To): ${matchedNum}`);
+                }
             }
         }
 
@@ -906,109 +943,75 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
             if (refCandidates.length > 0) {
                 // Optimized: Search all references in a single query instead of a loop
                 const [refMatch] = await conn.query(
-                    `SELECT c.id as conv_id, c.ticket_id, t.ticket_number 
+                    `SELECT c.id as conv_id, c.ticket_id, t.ticket_number, cu.email AS customer_email
                      FROM conversation_messages cm
                      JOIN conversations c ON cm.conversation_id = c.id
                      JOIN tickets t ON c.ticket_id = t.id
+                     LEFT JOIN customers cu ON cu.id = t.customer_id
                      WHERE cm.message_id IN (?) 
                      ORDER BY cm.created_at DESC LIMIT 1`,
                     [refCandidates]
                 );
                 if (refMatch.length) {
-                    matchedConvId = refMatch[0].conv_id;
-                    matchedTicketId = refMatch[0].ticket_id;
-                    matchedNum = refMatch[0].ticket_number;
-                    matchReason = 'header_references';
-                    logger.debug(`[EmailPoller] Header Match (References): ${matchedNum}`);
+                    const row = refMatch[0];
+                    if (await verifyOwnership(row.conv_id, row.customer_email, row.ticket_number, 'header_references')) {
+                        matchedConvId = row.conv_id;
+                        matchedTicketId = row.ticket_id;
+                        matchedNum = row.ticket_number;
+                        matchReason = 'header_references';
+                        logger.debug(`[EmailPoller] Header Match (References): ${matchedNum}`);
+                    }
                 }
             }
         }
 
         // --- STEP 2: Subject Pattern Match (TKT Number) ---
         if (!matchedTicketId) {
-            const ticketNumberMatch = rawSubject.match(/(TKT-\d{8}-\d{4})/i);
+            const ticketNumberMatch = rawSubject.match(/\b(TKT-\d{8}-\d{4}|[A-Z]-\d{5})\b/i);
             if (ticketNumberMatch) {
                 const tktNum = ticketNumberMatch[1].toUpperCase();
-                const [tktRows] = STRICT_SUBJECT_PARTICIPANT_MATCH
-                    ? await conn.query(
-                        `SELECT t.id, c.id as conv_id
-                         FROM tickets t
-                         LEFT JOIN customers cu ON cu.id = t.customer_id
-                         LEFT JOIN conversations c ON c.ticket_id = t.id
-                         WHERE t.ticket_number = ?
-                           AND (
-                             LOWER(COALESCE(cu.email, '')) = LOWER(?)
-                             OR EXISTS (
-                               SELECT 1
-                               FROM conversation_participants cp
-                               WHERE cp.conversation_id = c.id AND LOWER(cp.email) = LOWER(?)
-                             )
-                           )
-                         LIMIT 1`,
-                        [tktNum, senderEmail, senderEmail]
-                    )
-                    : await conn.query(
-                        `SELECT t.id, c.id as conv_id
-                         FROM tickets t
-                         LEFT JOIN conversations c ON c.ticket_id = t.id
-                         WHERE t.ticket_number = ? LIMIT 1`,
-                        [tktNum]
-                    );
+                const [tktRows] = await conn.query(
+                    `SELECT t.id, c.id as conv_id, cu.email AS customer_email
+                     FROM tickets t
+                     LEFT JOIN customers cu ON cu.id = t.customer_id
+                     JOIN conversations c ON c.ticket_id = t.id
+                     WHERE t.ticket_number = ?
+                     ORDER BY CASE WHEN c.source_channel = 'email' THEN 0 ELSE 1 END, c.id ASC
+                     LIMIT 1`,
+                    [tktNum]
+                );
                 if (tktRows.length) {
-                    matchedTicketId = tktRows[0].id;
-                    matchedConvId = tktRows[0].conv_id;
-                    matchedNum = tktNum;
-                    matchReason = 'subject_ticket_number';
-                    logger.debug(`[EmailPoller] Subject Pattern Match: ${matchedNum}`);
-                } else if (STRICT_SUBJECT_PARTICIPANT_MATCH) {
-                    logger.info(`[EmailPoller] Ticket-number subject found (${tktNum}) but sender ${senderEmail} is not a participant/customer. Creating new ticket.`);
+                    const row = tktRows[0];
+                    const isOwner = row.customer_email && row.customer_email.toLowerCase().trim() === senderEmail;
+                    const [participantRows] = row.conv_id
+                        ? await conn.query(
+                            `SELECT id
+                             FROM conversation_participants
+                             WHERE conversation_id = ? AND LOWER(email) = LOWER(?)
+                             LIMIT 1`,
+                            [row.conv_id, senderEmail]
+                        )
+                        : [[]];
+                    if (isOwner || participantRows.length > 0) {
+                        matchedTicketId = row.id;
+                        matchedConvId = row.conv_id;
+                        matchedNum = tktNum;
+                        matchReason = 'subject_ticket_number';
+                        logger.debug(`[EmailPoller] Subject Pattern Match: ${matchedNum}`);
+                    } else {
+                        await insertSecurityAudit('ticket_number_spoof_attempt', tktNum, rawSubject.slice(0, 200));
+                        logger.warn(`[EmailPoller] SECURITY: Ticket number ${tktNum} in subject from sender who is not owner/participant. sender=${senderEmail} messageId=${messageId}`);
+                    }
                 }
             }
         }
 
-        // --- STEP 3: Participant Fallback Safety Net ---
+        // --- STEP 3: No fuzzy participant fallback ---
+        // Privacy guard: never merge unrelated emails just because the sender is
+        // present on another open ticket. Threading is limited to RFC headers
+        // and explicit ticket-number subjects above.
         if (!matchedTicketId) {
-            const [pMatches] = await conn.query(
-                `SELECT cp.conversation_id, c.ticket_id, t.ticket_number, t.subject 
-                 FROM conversation_participants cp
-                 JOIN conversations c ON cp.conversation_id = c.id
-                 JOIN tickets t ON c.ticket_id = t.id
-                 WHERE cp.email = ?
-                   AND t.status NOT IN ('resolved', 'closed')
-                   AND t.updated_at >= DATE_SUB(NOW(), INTERVAL ${PARTICIPANT_FALLBACK_WINDOW_HOURS} HOUR)`,
-                [senderEmail]
-            );
-
-            if (pMatches.length > 0) {
-                // If there's more than one active ticket, find the best match by subject similarity
-                let bestMatch = null;
-                
-                for (const match of pMatches) {
-                    const existingSubject = (match.subject || '').replace(/^(re|fwd?|reply):\s*/i, '').trim().toLowerCase();
-                    const incomingSubject = cleanSubject.toLowerCase();
-
-                    // Priority 1: Exact Subject Match (after cleaning)
-                    if (existingSubject === incomingSubject) {
-                        bestMatch = match;
-                        logger.debug(`[EmailPoller] 🛡️ Exact Subject Fallback: ${match.ticket_number}`);
-                        break; 
-                    }
-                    
-                    // Priority 2: If it's a generic "Re:" reply, we only match if no better match found yet
-                    if (rawSubject.toLowerCase().match(/^(re|fwd|reply):/) && !bestMatch) {
-                        bestMatch = match;
-                        logger.debug(`[EmailPoller] 🛡️ Partial/Thread Fallback (First found): ${match.ticket_number}`);
-                    }
-                }
-
-                if (bestMatch) {
-                    matchedConvId = bestMatch.conversation_id;
-                    matchedTicketId = bestMatch.ticket_id;
-                    matchedNum = bestMatch.ticket_number;
-                    matchReason = 'participant_fallback';
-                    logger.info(`[EmailPoller] 🛡️ Participant Fallback Match: ${matchedNum}`);
-                }
-            }
+            logger.info(`[EmailPoller] No header/ticket-number match for ${messageId}; creating new ticket.`);
         }
 
         // --- STEP 4: Attach or Create ---
@@ -1111,7 +1114,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
             await saveEmailAttachments(conn, internalMsgId, parsed.attachments);
         }
 
-        // Add Participants (To + CC + BCC)
+        // Add visible participants only (To + CC). BCC is never promoted into the participant graph.
         await conn.query(`INSERT INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'to')`, [conversationId, senderEmail]);
         
         const uniqueParticipants = [...new Set(filterParticipants(visibleParticipants, senderEmail))];
