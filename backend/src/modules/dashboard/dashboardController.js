@@ -1,5 +1,6 @@
 // modules/dashboard/dashboardController.js
 import connectDB from "../../db/index.js";
+import { buildRoleFilter } from "../../utils/roleFilter.js";
 
 const ROLE_SCOPE = {
     superadmin: "All system tickets",
@@ -13,34 +14,22 @@ const ROLE_SCOPE = {
 export const getDashboard = async (req, res) => {
     try {
         const pool = connectDB();
-        const { role, userId } = req.user;
+        const { role } = req.user;
         const { targetUserId, shiftId } = req.query;
 
-        let roleFilter = "1=1";
-        const rp = [];
+        const { where: baseWhere, params: baseParams } = buildRoleFilter(req.user);
+        let roleFilter = baseWhere;
+        let rp = [...baseParams];
 
-        // Impersonation / Proxy Logic for Superadmins
-        if ((role === 'superadmin' || role === 'manager' || role === 'gm')) {
+        if (role === 'superadmin' || role === 'manager' || role === 'gm') {
             if (targetUserId) {
                 roleFilter = "t.assigned_to = ?";
-                rp.push(targetUserId);
+                rp = [targetUserId];
             } else if (shiftId) {
                 roleFilter = "t.assigned_to IN (SELECT user_id FROM shift_members WHERE shift_id = ?)";
-                rp.push(shiftId);
-            } else if (role === "manager") {
-                roleFilter = "t.escalation_level >= 2";
-            } else if (role === "gm") {
-                roleFilter = "t.escalation_level >= 3";
+                rp = [shiftId];
             }
-        } else {
-            // Standard role-based scoping
-            if (role === "agent") {
-                roleFilter = "t.assigned_to = ?";
-                rp.push(userId);
-            } else if (role === "tl") {
-                roleFilter = "t.assigned_to IN (SELECT id FROM users WHERE reporting_to = ? OR id = ?)";
-                rp.push(userId, userId);
-            }
+            // else: keep baseWhere — scoped to their own hierarchy
         }
 
         const n = (val) => { const v = parseInt(val); return isNaN(v) ? 0 : v; };
@@ -95,7 +84,9 @@ export const getDashboard = async (req, res) => {
              LEFT JOIN projects p ON t.project_id = p.id
              LEFT JOIN users fu ON el.from_user_id = fu.id
              LEFT JOIN users tu ON el.to_user_id = tu.id
-             ORDER BY el.escalated_at DESC LIMIT 10`
+             WHERE (${roleFilter})
+             ORDER BY el.escalated_at DESC LIMIT 10`,
+            rp
         );
 
         const [recentTickets] = await pool.query(

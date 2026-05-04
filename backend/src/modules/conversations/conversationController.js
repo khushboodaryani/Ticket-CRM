@@ -2,6 +2,7 @@ import connectDB from "../../db/index.js";
 import { logger } from "../../logger.js";
 import { createNotification } from "../notifications/notificationController.js";
 import { broadcast } from "../../services/socketService.js";
+import { buildRoleFilter } from "../../utils/roleFilter.js";
 
 /**
  * Get or create conversation for a ticket
@@ -62,9 +63,12 @@ export const getConversation = async (req, res) => {
         const pool = connectDB();
         const ticketId = req.params.ticketId;
 
-        // Ensure ticket exists
-        const [ticketRows] = await pool.query(`SELECT id FROM tickets WHERE id=?`, [ticketId]);
-        if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+        const [ticketRows] = await pool.query(
+            `SELECT t.id FROM tickets t WHERE t.id = ? AND (${roleWhere})`,
+            [ticketId, ...roleParams]
+        );
+        if (!ticketRows.length) return res.status(403).json({ success: false, message: "Access denied." });
 
         const [ticketInfo] = await pool.query(`SELECT source FROM tickets WHERE id=? LIMIT 1`, [ticketId]);
         const ticketSource = ticketInfo[0]?.source || 'manual';
@@ -89,10 +93,11 @@ export const getConversation = async (req, res) => {
         // Fetch attachments for these messages
         if (messages.length > 0) {
             const msgIds = messages.map(m => m.id);
+            const visibilityFilter = req.user.role === 'agent' ? "AND visibility = 'public'" : "";
             const [attRows] = await pool.query(
                 `SELECT id, message_id, original_name, file_type, file_size, visibility
                  FROM conversation_message_attachments
-                 WHERE message_id IN (?) AND is_deleted = 0`,
+                 WHERE message_id IN (?) AND is_deleted = 0 ${visibilityFilter}`,
                 [msgIds]
             );
 
@@ -134,14 +139,15 @@ export const addMessage = async (req, res) => {
         const pool = connectDB();
         const ticketId = req.params.ticketId;
 
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
         const [ticketRows] = await pool.query(
             `SELECT t.*, u.name as assigned_to_name, c.email as customer_email FROM tickets t
              LEFT JOIN customers c ON t.customer_id = c.id
              LEFT JOIN users u ON t.assigned_to = u.id
-             WHERE t.id=?`,
-            [ticketId]
+             WHERE t.id = ? AND (${roleWhere})`,
+            [ticketId, ...roleParams]
         );
-        if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        if (!ticketRows.length) return res.status(403).json({ success: false, message: "Access denied." });
         const ticket = ticketRows[0];
 
         // --- ENTERPRISE SLA 2.1: First Response Guard ---

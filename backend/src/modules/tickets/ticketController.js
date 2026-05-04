@@ -6,6 +6,7 @@ import { createNotification } from "../notifications/notificationController.js";
 import { workflowEvents } from "../workflows/workflowEngine.js";
 import { logger } from "../../logger.js";
 import { getShiftAssignee } from "../../services/assignmentService.js";
+import { buildRoleFilter } from "../../utils/roleFilter.js";
 import { config } from "dotenv";
 config();
 
@@ -62,18 +63,6 @@ const resolveEscalationAssignee = async (pool, currentAssigneeId, targetLevel) =
     }
 
     return fallback;
-};
-
-const buildRoleFilter = (user) => {
-    const { userId, role } = user;
-    switch (role) {
-        case "agent": return { where: "(t.assigned_to = ? OR t.assigned_to IS NULL)", params: [userId] };
-        case "tl": return { where: "t.escalation_level >= 1 AND (t.assigned_to = ? OR t.assigned_to IN (SELECT id FROM users WHERE reporting_to = ?))", params: [userId, userId] };
-        case "manager": return { where: "t.escalation_level >= 2 AND (t.assigned_to = ? OR t.assigned_to IN (SELECT id FROM users WHERE reporting_to = ? OR reporting_to IN (SELECT id FROM users WHERE reporting_to = ?)))", params: [userId, userId, userId] };
-        case "gm": return { where: "t.escalation_level >= 3", params: [] };
-        case "superadmin": return { where: "1=1", params: [] };
-        default: return { where: "t.assigned_to = ?", params: [userId] };
-    }
 };
 
 // GET /api/tickets
@@ -139,6 +128,7 @@ export const getTickets = async (req, res) => {
 export const getTicketById = async (req, res) => {
     try {
         const pool = connectDB();
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
         const [rows] = await pool.query(
             `SELECT t.*,
               c.name as customer_name, p.name as project_name,
@@ -153,10 +143,10 @@ export const getTicketById = async (req, res) => {
        LEFT JOIN queues q ON t.queue_id = q.id
        LEFT JOIN priorities pri ON t.priority_id = pri.id
        LEFT JOIN sla_priority_categories cat ON pri.category_id = cat.id
-       WHERE t.id = ?`,
-            [req.params.id]
+       WHERE t.id = ? AND (${roleWhere})`,
+            [req.params.id, ...roleParams]
         );
-        if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        if (!rows.length) return res.status(403).json({ success: false, message: "Not found or access denied." });
 
         // -- IDEA 3: 1st Responder Auto-Assign (Atomic Claim for P1 EMERGENCY ONLY) --
         // Only P1 triggers auto-claim + emergency broadcast. P2+ are standard critical tickets.
@@ -415,13 +405,12 @@ export const updateTicket = async (req, res) => {
     const { category, priority, description, status, assigned_to } = req.body;
     try {
         const pool = connectDB();
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
         const [existing] = await pool.query(
-            `SELECT t.*, c.email as customer_email FROM tickets t 
-             LEFT JOIN customers c ON t.customer_id = c.id 
-             WHERE t.id=?`, 
-            [req.params.id]
+            `SELECT t.* FROM tickets t WHERE t.id = ? AND (${roleWhere})`,
+            [req.params.id, ...roleParams]
         );
-        if (!existing.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        if (!existing.length) return res.status(403).json({ success: false, message: "Not found or access denied." });
 
         const updates = [];
         const vals = [];
@@ -586,13 +575,14 @@ export const assignQueue = async (req, res) => {
     const { queue_id } = req.body;
     try {
         const pool = connectDB();
-        const [ticketRows] = await pool.query(
-            `SELECT queue_id, priority, priority_id, customer_id, project_id, etr, resolved_timezone FROM tickets WHERE id=?`, 
-            [req.params.id]
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+        const [existing] = await pool.query(
+            `SELECT t.* FROM tickets t WHERE t.id = ? AND (${roleWhere})`,
+            [req.params.id, ...roleParams]
         );
-        if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        if (!existing.length) return res.status(403).json({ success: false, message: "Not found or access denied." });
 
-        const ticket = ticketRows[0];
+        const ticket = existing[0];
         const oldQueueId = ticket.queue_id;
         const newQueueId = queue_id;
 
@@ -654,15 +644,19 @@ export const changePriority = async (req, res) => {
 
     try {
         const pool = connectDB();
-        const [rows] = await pool.query(`SELECT ticket_number, priority FROM tickets WHERE id=?`, [req.params.id]);
-        if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+        const [existing] = await pool.query(
+            `SELECT t.* FROM tickets t WHERE t.id = ? AND (${roleWhere})`,
+            [req.params.id, ...roleParams]
+        );
+        if (!existing.length) return res.status(403).json({ success: false, message: "Not found or access denied." });
 
         // Dynamic priority validation from DB
         const validPriorities = await getConfiguredPriorities(pool);
         if (!validPriorities.includes(priority))
             return res.status(400).json({ success: false, message: `Invalid priority. Valid: ${validPriorities.join(', ')}` });
 
-        const oldPriority = rows[0].priority;
+        const oldPriority = existing[0].priority;
         await pool.query(`UPDATE tickets SET priority=? WHERE id=?`, [priority, req.params.id]);
 
         await pool.query(
@@ -684,8 +678,12 @@ export const addTask = async (req, res) => {
     if (!title?.trim()) return res.status(400).json({ success: false, message: "Task title is required." });
     try {
         const pool = connectDB();
-        const [ticketRows] = await pool.query(`SELECT id, ticket_number FROM tickets WHERE id=?`, [req.params.id]);
-        if (!ticketRows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+        const [existing] = await pool.query(
+            `SELECT t.* FROM tickets t WHERE t.id = ? AND (${roleWhere})`,
+            [req.params.id, ...roleParams]
+        );
+        if (!existing.length) return res.status(403).json({ success: false, message: "Not found or access denied." });
 
         const [result] = await pool.query(
             `INSERT INTO ticket_tasks (ticket_id, title, assigned_to, due_date, created_by) VALUES (?,?,?,?,?)`,
@@ -701,7 +699,7 @@ export const addTask = async (req, res) => {
             await createNotification(pool, {
                 user_id: assigned_to,
                 type: 'ticket_updated',
-                title: `New Task on Ticket: ${ticketRows[0].ticket_number}`,
+                title: `New Task on Ticket: ${existing[0].ticket_number}`,
                 body: `You have been assigned a new task: "${title.trim()}"`,
                 entity_id: req.params.id
             });
@@ -771,10 +769,14 @@ export const escalateTicket = async (req, res) => {
     const { reason } = req.body;
     try {
         const pool = connectDB();
-        const [rows] = await pool.query(`SELECT * FROM tickets WHERE id=?`, [req.params.id]);
-        if (!rows.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+        const [existing] = await pool.query(
+            `SELECT t.* FROM tickets t WHERE t.id = ? AND (${roleWhere})`,
+            [req.params.id, ...roleParams]
+        );
+        if (!existing.length) return res.status(403).json({ success: false, message: "Not found or access denied." });
 
-        const ticket = rows[0];
+        const ticket = existing[0];
         const newLevel = Math.min(ticket.escalation_level + 1, 4);
 
         const resolvedAssignee = await resolveEscalationAssignee(pool, ticket.assigned_to, newLevel);
@@ -829,6 +831,7 @@ export const escalateTicket = async (req, res) => {
 export const getSTRQueue = async (req, res) => {
     try {
         const pool = connectDB();
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
         const [rows] = await pool.query(
             `SELECT t.id, t.ticket_number, t.priority as priority_name, t.status, t.escalation_level, t.sla_state, t.str, t.etr,
               u.name as assigned_to_name, u.role as assigned_role,
@@ -842,8 +845,9 @@ export const getSTRQueue = async (req, res) => {
        LEFT JOIN queues q ON t.queue_id = q.id
        LEFT JOIN priorities pri ON t.priority_id = pri.id
        LEFT JOIN sla_priority_categories cat ON pri.category_id = cat.id
-       WHERE t.status IN ('open','in_progress')
-       ORDER BY cat.sort_order ASC, pri.level ASC, t.str ASC`
+       WHERE t.status IN ('open','in_progress') AND (${roleWhere})
+       ORDER BY cat.sort_order ASC, pri.level ASC, t.str ASC`,
+            [...roleParams]
         );
         return res.json({ success: true, queue: rows });
     } catch (err) {
@@ -1083,10 +1087,14 @@ export const slaHold = async (req, res) => {
 
     try {
         const pool = connectDB();
-        const [tickets] = await pool.query(`SELECT * FROM tickets WHERE id=?`, [id]);
-        if (!tickets.length) return res.status(404).json({ success: false, message: "Ticket not found." });
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+        const [existing] = await pool.query(
+            `SELECT t.* FROM tickets t WHERE t.id = ? AND (${roleWhere})`,
+            [req.params.id, ...roleParams]
+        );
+        if (!existing.length) return res.status(403).json({ success: false, message: "Not found or access denied." });
 
-        const ticket = tickets[0];
+        const ticket = existing[0];
 
         if (action === 'pause') {
             await pool.query(

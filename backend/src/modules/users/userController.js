@@ -106,7 +106,12 @@ export const updateUser = async (req, res) => {
             updates.push('role=?'); vals.push(role);
         }
 
-        if (reporting_to !== undefined) { updates.push('reporting_to=?'); vals.push(reporting_to || null); }
+        if (reporting_to !== undefined) {
+            if (req.user.role !== 'superadmin')
+                return res.status(403).json({ success: false, message: "Only superadmin can change reporting hierarchy." });
+            updates.push('reporting_to=?');
+            vals.push(reporting_to || null);
+        }
         if (is_active !== undefined) { updates.push('is_active=?'); vals.push(is_active ? 1 : 0); }
         if (password) { updates.push('password_hash=?'); vals.push(await bcrypt.hash(password, 12)); }
 
