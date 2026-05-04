@@ -72,7 +72,7 @@ function printCycleTable(rows) {
     if (!rows?.length || typeof console.table !== 'function') return;
     try {
         console.table(rows);
-    } catch (_) {}
+    } catch (_) { }
 }
 
 async function getPollerCheckpoint(pool) {
@@ -274,6 +274,8 @@ export async function processEmails(connection) {
             logger[busyLevel](
                 `[EmailPoller] Global lock busy. Another worker is processing emails. consecutiveBusy=${consecutiveLockBusyCount}`
             );
+            try { lockConn.release(); } catch (_) { }   // ← ADD THIS
+            lockConn = null;
             isProcessing = false;
             return;
         }
@@ -348,7 +350,15 @@ export async function processEmails(connection) {
                 const messageStart = Date.now();
                 const currentUid = parseInt(msg.attributes?.uid || 0, 10);
                 try {
-                    const fetchResults = await connection.search([['UID', `${currentUid}:${currentUid}`]], { bodies: [''], markSeen: false });
+                    const fetchResults = await Promise.race([
+                        connection.search(
+                            [['UID', `${currentUid}:${currentUid}`]],
+                            { bodies: [''], markSeen: false }
+                        ),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error(`IMAP fetch timeout uid=${currentUid}`)), 15000)
+                        )
+                    ]);
                     const fullMsg = fetchResults && fetchResults[0];
 
                     if (!fullMsg) {
@@ -442,7 +452,7 @@ export async function processEmails(connection) {
             }
         }
         if (lockConn) {
-            try { lockConn.release(); } catch (_) {}
+            try { lockConn.release(); } catch (_) { }
         }
         isProcessing = false;
         if (pendingProcess) {
@@ -483,59 +493,59 @@ export async function resolveCustomerByDomain(conn, pool, senderEmail, senderNam
     }
 
     if (!isPublicDomain) {
-    // 1. Try exact project-level domain match
-    const [projectMatch] = await conn.query(
-        `SELECT cd.customer_id, cd.project_id, cd.queue_id, c.name as customer_name
+        // 1. Try exact project-level domain match
+        const [projectMatch] = await conn.query(
+            `SELECT cd.customer_id, cd.project_id, cd.queue_id, c.name as customer_name
          FROM customer_domains cd
           JOIN customers c ON cd.customer_id = c.id
           WHERE cd.domain = ? AND cd.project_id IS NOT NULL AND cd.is_active = 1 AND c.is_deleted = 0
          LIMIT 1`,
-        [domain]
-    );
-    if (projectMatch.length) {
-        return {
-            customerId: projectMatch[0].customer_id,
-            projectId: projectMatch[0].project_id,
-            queueId: projectMatch[0].queue_id,
-            customerName: projectMatch[0].customer_name,
-            matchType: 'project_domain'
-        };
-    }
+            [domain]
+        );
+        if (projectMatch.length) {
+            return {
+                customerId: projectMatch[0].customer_id,
+                projectId: projectMatch[0].project_id,
+                queueId: projectMatch[0].queue_id,
+                customerName: projectMatch[0].customer_name,
+                matchType: 'project_domain'
+            };
+        }
 
-    // 2. Try customer-level domain match (bubble up parent domains)
-    //    e.g. for 'shams.multycomm.com' → try ['shams.multycomm.com', 'multycomm.com']
-    const domainCandidates = buildDomainCandidates(domain);
+        // 2. Try customer-level domain match (bubble up parent domains)
+        //    e.g. for 'shams.multycomm.com' → try ['shams.multycomm.com', 'multycomm.com']
+        const domainCandidates = buildDomainCandidates(domain);
 
-    if (domainCandidates.length > 0) {
-        const [customerMatch] = await conn.query(
-            `SELECT cd.customer_id, cd.queue_id, c.name as customer_name, c.default_project_id
+        if (domainCandidates.length > 0) {
+            const [customerMatch] = await conn.query(
+                `SELECT cd.customer_id, cd.queue_id, c.name as customer_name, c.default_project_id
              FROM customer_domains cd
               JOIN customers c ON cd.customer_id = c.id
               WHERE cd.domain IN (?) AND cd.project_id IS NULL AND cd.is_active = 1 AND c.is_deleted = 0
              ORDER BY LENGTH(cd.domain) DESC
              LIMIT 1`,
-            [domainCandidates]
-        );
-        if (customerMatch.length) {
-            // Use customer's default_project_id, or fall back to env default
-            let projectId = customerMatch[0].default_project_id || null;
-            if (!projectId) {
-                // Find any project under this customer
-                const [fallbackProject] = await conn.query(
-                    'SELECT id FROM projects WHERE customer_id = ? AND is_deleted = 0 LIMIT 1',
-                    [customerMatch[0].customer_id]
-                );
-                projectId = fallbackProject.length ? fallbackProject[0].id : DEFAULT_PROJECT_ID;
+                [domainCandidates]
+            );
+            if (customerMatch.length) {
+                // Use customer's default_project_id, or fall back to env default
+                let projectId = customerMatch[0].default_project_id || null;
+                if (!projectId) {
+                    // Find any project under this customer
+                    const [fallbackProject] = await conn.query(
+                        'SELECT id FROM projects WHERE customer_id = ? AND is_deleted = 0 LIMIT 1',
+                        [customerMatch[0].customer_id]
+                    );
+                    projectId = fallbackProject.length ? fallbackProject[0].id : DEFAULT_PROJECT_ID;
+                }
+                return {
+                    customerId: customerMatch[0].customer_id,
+                    projectId,
+                    queueId: customerMatch[0].queue_id,
+                    customerName: customerMatch[0].customer_name,
+                    matchType: 'customer_domain'
+                };
             }
-            return {
-                customerId: customerMatch[0].customer_id,
-                projectId,
-                queueId: customerMatch[0].queue_id,
-                customerName: customerMatch[0].customer_name,
-                matchType: 'customer_domain'
-            };
         }
-    }
     } // end if (!isPublicDomain) — steps 1 & 2 skipped for public domains
 
     // 3. Legacy: exact email match on customers table
@@ -591,7 +601,7 @@ export async function resolveCustomerByDomain(conn, pool, senderEmail, senderNam
             `INSERT INTO held_emails (approval_request_id, sender_email, sender_name, subject, body, message_id, in_reply_to, reference_chain)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [approvalRequestId, senderEmail, senderName, rawSubject.slice(0, 500), bodyText.slice(0, 5000),
-             messageId, inReplyTo || null, (references || []).join(' ') || null]
+                messageId, inReplyTo || null, (references || []).join(' ') || null]
         );
 
         // Update email_logs status to 'held'
@@ -627,7 +637,7 @@ export async function resolveCustomerByDomain(conn, pool, senderEmail, senderNam
                         sender_email: notifPayload.senderEmail,
                         approval_request_id: notifPayload.approvalRequestId
                     });
-                } catch (_) {}
+                } catch (_) { }
             } catch (notifErr) {
                 logger.error(`[EmailPoller] Superadmin notification failed (non-fatal): ${notifErr.message}`);
             }
@@ -1048,10 +1058,10 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
 
         // 5. Create Ticket (Relational SLA 2.1)
         const { SlaCalculator } = await import('./sla/calculator.js');
-        
+
         // Dynamic Resolution: Scan keywords (Case-Insensitive)
         const { categoryId, isEmergency } = resolvePriorityFromText(rawSubject, bodyText);
-        
+
         // Map to DB priority using category_id:
         //   Emergency → P1 (level ASC = most severe)
         //   Normal    → Lowest tier in that category (level DESC = least severe default)
@@ -1072,7 +1082,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
         const calendar = await getSlaCalendar(conn);
         const calendarForTicket = { ...calendar, timezone: resolvedTz || calendar?.timezone || TZ };
         const calculator = new SlaCalculator(conn);
-        
+
         const nowStr = moment().tz(TZ).format('YYYY-MM-DD HH:mm:ss');
         const strMoment = calculator.computeDueDate(nowStr, slaPolicy.first_response_hrs, calendarForTicket);
         const str = strMoment.format('YYYY-MM-DD HH:mm:ss');
@@ -1080,7 +1090,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
         const etr = etrMoment.format('YYYY-MM-DD HH:mm:ss');
 
         const ticketNumber = await generateTicketNumber(pool, priorityId);
-        
+
         const [tResult] = await conn.query(
             `INSERT INTO tickets (
                 ticket_number, subject, customer_id, project_id, queue_id, category, priority, priority_id, description, 
@@ -1089,7 +1099,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
             )
             VALUES (?,?,?,?,?,?,?,?,?, 'open', 1, 'active', ?, ?, ?, NULL, 'email', 'auto', ?, ?, ?)`,
             [
-                ticketNumber, rawSubject.slice(0, 500), customerId, resolvedProjectId, resolvedQueueId || null, cleanSubject.slice(0, 250), 
+                ticketNumber, rawSubject.slice(0, 500), customerId, resolvedProjectId, resolvedQueueId || null, cleanSubject.slice(0, 250),
                 priorityName, priorityId, description, str, etr, systemUserId,
                 resolvedTz, slaPolicy.id, slaPolicy.version
             ]
@@ -1116,7 +1126,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
 
         // Add visible participants only (To + CC). BCC is never promoted into the participant graph.
         await conn.query(`INSERT INTO conversation_participants (conversation_id, email, type) VALUES (?, ?, 'to')`, [conversationId, senderEmail]);
-        
+
         const uniqueParticipants = [...new Set(filterParticipants(visibleParticipants, senderEmail))];
         for (const email of uniqueParticipants) {
             const normalized = email.toLowerCase().trim();
@@ -1140,18 +1150,18 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
         const { workflowEvents } = await import('../modules/workflows/workflowEngine.js');
         workflowEvents.emit('ticket_created', {
             ticketId,
-            payload: { 
-                customer_id: customerId, 
-                project_id: resolvedProjectId, 
-                category: cleanSubject.slice(0, 250), 
-                priority: finalPriority, 
-                status: 'open', 
+            payload: {
+                customer_id: customerId,
+                project_id: resolvedProjectId,
+                category: cleanSubject.slice(0, 250),
+                priority: finalPriority,
+                status: 'open',
                 source: 'email',
                 queue_id: resolvedQueueId || null,
                 sender_email: senderEmail
             }
         });
-        
+
         // Step 7: Acknowledgement is handled by workflowEngine → handleTicketCreatedNotification
         // DO NOT send here — it would cause DUPLICATE emails to the customer.
         // The workflow engine sends the FINAL version with corrected ETR after rule processing.
@@ -1183,7 +1193,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
             if (!isAutomated) {
                 publishBroadcast('new_ticket', { id: ticketId, ticket_number: ticketNumber, status: 'open', created_at: nowStr });
             }
-        } catch (_) {}
+        } catch (_) { }
 
         return { status: 'ticket_created', messageId, ticketNumber };
 
@@ -1200,7 +1210,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
         }
         throw err;
     } finally {
-        try { if (conn) conn.release(); } catch (_) {}
+        try { if (conn) conn.release(); } catch (_) { }
     }
 }
 
@@ -1218,13 +1228,13 @@ export async function startEmailPoller() {
     }
 
     const config = {
-        imap: { 
-            user: pollerUser, 
-            password: pollerPass, 
-            host: imapConfig.host, 
-            port: imapConfig.port, 
-            tls: imapConfig.tls, 
-            tlsOptions: { rejectUnauthorized: false }, 
+        imap: {
+            user: pollerUser,
+            password: pollerPass,
+            host: imapConfig.host,
+            port: imapConfig.port,
+            tls: imapConfig.tls,
+            tlsOptions: { rejectUnauthorized: false },
             authTimeout: 15000,
             debug: (msg) => { if (msg.includes('AUTH') || msg.includes('LOG')) logger.debug(`[IMAP-RAW] ${msg}`); }
         },
@@ -1239,16 +1249,16 @@ export async function startEmailPoller() {
     try {
         // Cleanup existing connection if any
         if (activeConnection) {
-            try { 
-                activeConnection.end(); 
+            try {
+                activeConnection.end();
                 activeConnection.imap.removeAllListeners();
-            } catch (_) {}
+            } catch (_) { }
             activeConnection = null;
         }
 
         logger.info(`[EmailPoller] 📡 Attempting IMAP connection to ${gmailUser}... (Attempt ${reconnectAttempts + 1})`);
         activeConnection = await imapSimple.connect(config);
-        
+
         // Reset state on success
         reconnectAttempts = 0;
         await activeConnection.openBox('INBOX');
@@ -1293,7 +1303,7 @@ export async function startEmailPoller() {
 
 function handleReconnection() {
     if (activeConnection) {
-        try { activeConnection.end(); } catch (_) {}
+        try { activeConnection.end(); } catch (_) { }
         activeConnection = null;
     }
 
