@@ -241,11 +241,6 @@ async function saveEmailAttachments(pool, messageId, attachments) {
 export async function processEmails(connection) {
     const now = Date.now();
 
-    if (isProcessing && (now - lastProcessStart > 120000)) {
-        logger.warn('[EmailPoller] Hang detected. Resetting lock.');
-        isProcessing = false;
-    }
-
     if (isProcessing) {
         pendingProcess = true;
         logger.info('[EmailPoller] Scan requested while busy. Queued next scan.');
@@ -267,13 +262,28 @@ export async function processEmails(connection) {
         // --- GLOBAL LOCK ---
         // Prevents multiple PM2 processes from racing. Timeout 0 = return immediately if locked.
         lockConn = await pool.getConnection();
-        const [lockResult] = await lockConn.query("SELECT GET_LOCK('email_poller_lock', 0) AS lockStatus");
+        const [lockResult] = await lockConn.query("SELECT GET_LOCK('email_poller_lock', 2) AS lockStatus");
         if (lockResult[0].lockStatus !== 1) {
             consecutiveLockBusyCount += 1;
             const busyLevel = consecutiveLockBusyCount >= 4 ? 'warn' : 'info';
             logger[busyLevel](
                 `[EmailPoller] Global lock busy. Another worker is processing emails. consecutiveBusy=${consecutiveLockBusyCount}`
             );
+
+            if (consecutiveLockBusyCount >= 8) {
+                try {
+                    const [res] = await pool.query("SELECT IS_USED_LOCK('email_poller_lock') AS owner");
+                    const ownerId = parseInt(res[0]?.owner || 0, 10);
+                    if (Number.isFinite(ownerId) && ownerId > 0) {
+                        logger.error(`[EmailPoller] Lock stuck for >120s. Killing stale owner session=${ownerId}`);
+                        await pool.query(`KILL CONNECTION ${ownerId}`);
+                        consecutiveLockBusyCount = 0;
+                    }
+                } catch (killErr) {
+                    logger.error(`[EmailPoller] Stale lock kill failed: ${killErr.message}`);
+                }
+            }
+
             try { lockConn.release(); } catch (_) { }   // ← ADD THIS
             lockConn = null;
             isProcessing = false;
@@ -306,7 +316,12 @@ export async function processEmails(connection) {
                 break;
             }
 
-            const searchResult = await searchMessagesSinceCheckpoint(connection, currentCheckpoint);
+            const searchResult = await Promise.race([
+                searchMessagesSinceCheckpoint(connection, currentCheckpoint),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('IMAP search timeout (outer)')), 20000)
+                )
+            ]);
             currentSearchLabel = searchResult.searchLabel || 'unknown';
 
             const rawMessages = searchResult.messages || [];
