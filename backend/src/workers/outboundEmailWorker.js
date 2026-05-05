@@ -3,6 +3,7 @@ import redis from '../config/redis.js';
 import { logger } from '../logger.js';
 import { transporter } from '../services/mailTransport.js';
 import { persistQueuedOutboundSuccess } from '../modules/notifications/emailPersistence.js';
+import connectDB from '../db/index.js';
 
 let worker;
 
@@ -24,6 +25,20 @@ export function startOutboundEmailWorker() {
             const { mailOptions, metadata } = job.data || {};
             if (!mailOptions) {
                 throw new Error('Outbound email job missing mailOptions');
+            }
+
+            // --- SQL-DRIVEN TOGGLE ---
+            const pool = connectDB();
+            try {
+                const [settings] = await pool.query(
+                    "SELECT setting_value FROM system_settings WHERE setting_key = 'DISABLE_OUTBOUND_EMAILS' LIMIT 1"
+                );
+                if (settings[0]?.setting_value === 'true') {
+                    logger.info(`[OutboundEmailWorker] 🔇 Muted via SQL: Skipping send for job=${job.id}`);
+                    return;
+                }
+            } catch (dbErr) {
+                // If DB check fails, we continue sending to be safe
             }
 
             const trustedMailOptions = {
