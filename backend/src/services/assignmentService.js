@@ -60,7 +60,13 @@ export const getShiftAssignee = async (queueId = null, priority = 'P3') => {
             query += ` JOIN queue_agents qa ON qa.user_id = u.id `;
         }
         
-        query += ` WHERE sm.shift_id IN (?) AND u.role IN ('agent', 'tl') AND u.is_active = 1 `;
+        query += ` 
+            WHERE sm.shift_id IN (?) 
+            AND u.role IN ('agent', 'tl') 
+            AND u.is_active = 1 
+            AND u.is_online = 1
+            AND u.last_heartbeat > DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+        `;
         
         if (queueId) {
             query += ` AND qa.queue_id = ? `;
@@ -70,13 +76,12 @@ export const getShiftAssignee = async (queueId = null, priority = 'P3') => {
         const [agents] = await pool.query(query, params);
 
         if (!agents.length) {
-            logger.info(`[Assignment] No active agents found in shift(s): ${activeShiftIds.join(',')}`);
+            logger.info(`[Assignment] No active/online agents found in shift(s): ${activeShiftIds.join(',')}`);
             return null;
         }
 
-        // 3. Prioritize Online agents
-        const onlineAgents = agents.filter(a => a.is_online === 1);
-        const candidates = onlineAgents.length > 0 ? onlineAgents : agents;
+        // 3. Final candidates (No offline fallback)
+        const candidates = agents;
 
         // 4. Pick the Least-Loaded candidate
         // Sort by load_count ascending, then randomly if equal load to distribute fairly

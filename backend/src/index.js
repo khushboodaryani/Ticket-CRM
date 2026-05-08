@@ -16,6 +16,7 @@ import { initWorkflowEngine } from "./modules/workflows/workflowEngine.js";
 import { logger } from "./logger.js";
 import { initSocket } from "./services/socketServer.js";
 import { startEmailWorkerManager, stopEmailWorkerManager } from "./services/emailWorkerManager.js";
+import { startAssignmentSweeper } from "./workers/assignmentWorker.js";
 
 // Verify necessary environment variables
 if (!process.env.PORT) {
@@ -68,6 +69,9 @@ const startServer = async () => {
         // startSlaWorker(); (Using BullMQ)
         startSlaWorker();
         startSLAEngine();
+
+        // Start Assignment Sweeper (Queue Sweeper)
+        startAssignmentSweeper();
 
         // Initialize Workflow Engine
         initWorkflowEngine();
