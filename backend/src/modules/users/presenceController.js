@@ -1,5 +1,6 @@
 // modules/users/presenceController.js
 import connectDB from "../../db/index.js";
+import { notifyAgentStatusChange } from "../../services/socketBroadcaster.js";
 
 /**
  * POST /api/users/presence
@@ -24,6 +25,8 @@ export const updatePresence = async (req, res) => {
              WHERE id = ?`,
             [is_online ? 1 : 0, status || (is_online ? 'available' : 'offline'), userId]
         );
+
+        notifyAgentStatusChange(userId, status || (is_online ? 'available' : 'offline'), 'manual');
 
         return res.json({ 
             success: true, 

@@ -44,7 +44,7 @@ export const notifyTicketCreated = (ticket) => {
 };
 
 export const notifyAgentStatusChange = (userId, status, source = 'manual') => {
-    broadcastEvent("monitoring_agents", "AGENT_STATUS_CHANGE", { userId, status, source });
+    broadcastEvent("monitoring_agents", "AGENT_STATUS_CHANGE", { userId, status, source, ts: Date.now() });
 };
 
 export const notifySLABreach = (ticketId, queueId, details) => {

@@ -15,19 +15,22 @@ export default function AgentsDashboard() {
     const navigate = useNavigate();
     const [agents, setAgents] = useState(latestSnapshot?.agents || []);
     const [filters, setFilters] = useState({ name: '', status: '' });
+    const [tick, setTick] = useState(0); // For forcing re-renders to update relative time
 
     useEffect(() => {
+        const timer = setInterval(() => setTick(t => t + 1), 30000); // Refresh every 30s
         const handleRehydrate = (e) => setAgents(e.detail.agents || []);
         const handlePacket = (e) => {
             if (e.detail.type === 'AGENT_STATUS_CHANGE') {
-                const { userId, status } = e.detail.data;
-                setAgents(prev => prev.map(a => a.id == userId ? { ...a, status, is_online: status !== 'offline' ? 1 : 0 } : a));
+                const { userId, status, ts } = e.detail.data;
+                setAgents(prev => prev.map(a => a.id == userId ? { ...a, status, is_online: status !== 'offline' ? 1 : 0, last_heartbeat: ts || Date.now() } : a));
             }
         };
 
         window.addEventListener('dashboard_rehydrated', handleRehydrate);
         window.addEventListener('dashboard_packet', handlePacket);
         return () => {
+            clearInterval(timer);
             window.removeEventListener('dashboard_rehydrated', handleRehydrate);
             window.removeEventListener('dashboard_packet', handlePacket);
         };
@@ -80,7 +83,7 @@ export default function AgentsDashboard() {
                                 <tr>
                                     <th>Agent Name</th>
                                     <th>Current Status</th>
-                                    <th>Daily Health</th>
+                                    <th>Last Activity</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -110,8 +113,22 @@ export default function AgentsDashboard() {
                                             </span>
                                         </td>
                                         <td>
-                                            <div style={{ fontSize: 11, fontWeight: 700, color: a.is_online ? '#10b981' : 'var(--text-muted)' }}>
-                                                {a.is_online ? 'CONNECTED' : 'DISCONNECTED'}
+                                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)' }}>
+                                                {a.last_heartbeat ? (
+                                                    (() => {
+                                                        const date = new Date(a.last_heartbeat);
+                                                        const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+                                                        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                                                        
+                                                        let relative = '';
+                                                        if (diff < 60) relative = 'Just now';
+                                                        else if (diff < 3600) relative = `${Math.floor(diff / 60)}m ago`;
+                                                        else if (diff < 86400) relative = `${Math.floor(diff / 3600)}h ago`;
+                                                        else relative = date.toLocaleDateString();
+                                                        
+                                                        return `${relative} [${timeStr}]`;
+                                                    })()
+                                                ) : 'Never'}
                                             </div>
                                         </td>
                                         <td>
