@@ -16,20 +16,54 @@ export const getDashboard = async (req, res) => {
         const pool = connectDB();
         const { role } = req.user;
         const { targetUserId, shiftId } = req.query;
+        const canUsePortalScope = ['superadmin', 'gm', 'manager'].includes(role);
 
-        const { where: baseWhere, params: baseParams } = buildRoleFilter(req.user);
-        let roleFilter = baseWhere;
-        let rp = [...baseParams];
+        let roleFilter;
+        let rp;
 
-        if (role === 'superadmin' || role === 'manager' || role === 'gm') {
-            if (targetUserId) {
+        if (targetUserId) {
+            if (!canUsePortalScope) {
+                return res.status(403).json({ success: false, message: "Unauthorized dashboard scope" });
+            }
+
+            // "Portal" mode: View the dashboard through the eyes of the target user
+            const [targetRows] = await pool.query("SELECT id, role FROM users WHERE id = ?", [targetUserId]);
+            if (targetRows.length) {
+                if (role !== 'superadmin') {
+                    const [allowedRows] = await pool.query(
+                        `WITH RECURSIVE subordinates AS (
+                            SELECT id FROM users WHERE reporting_to = ?
+                            UNION ALL
+                            SELECT u.id FROM users u INNER JOIN subordinates s ON s.id = u.reporting_to
+                        )
+                        SELECT 1 FROM subordinates WHERE id = ? LIMIT 1`,
+                        [req.user.userId, targetUserId]
+                    );
+
+                    if (!allowedRows.length && String(req.user.userId) !== String(targetUserId)) {
+                        return res.status(403).json({ success: false, message: "Unauthorized dashboard scope" });
+                    }
+                }
+
+                const { where, params } = buildRoleFilter({ userId: targetRows[0].id, role: targetRows[0].role });
+                roleFilter = where;
+                rp = params;
+            } else {
                 roleFilter = "t.assigned_to = ?";
                 rp = [targetUserId];
-            } else if (shiftId) {
-                roleFilter = "t.assigned_to IN (SELECT user_id FROM shift_members WHERE shift_id = ?)";
-                rp = [shiftId];
             }
-            // else: keep baseWhere — scoped to their own hierarchy
+        } else if (shiftId) {
+            if (!canUsePortalScope) {
+                return res.status(403).json({ success: false, message: "Unauthorized dashboard scope" });
+            }
+
+            roleFilter = "t.assigned_to IN (SELECT user_id FROM shift_members WHERE shift_id = ?)";
+            rp = [shiftId];
+        } else {
+            // Standard mode: Use the requester's own visibility
+            const { where: baseWhere, params: baseParams } = buildRoleFilter(req.user);
+            roleFilter = baseWhere;
+            rp = [...baseParams];
         }
 
         const n = (val) => { const v = parseInt(val); return isNaN(v) ? 0 : v; };
