@@ -28,11 +28,18 @@ export const initSocket = (server) => {
                 socket.join(`user_${userId}`);
                 logger.info(`👤 User ${userId} joined room user_${userId}`);
 
-                // Update online status and set available status by default
+                // Update online status on socket connect.
+                // POLICY: If the user's presence was manually set ('manual'), preserve it.
+                // Only switch to system-managed if they weren't already manually online.
                 try {
                     const pool = connectDB();
                     await pool.query(
-                        "UPDATE users SET is_online = 1, status = 'available', status_source = 'system', last_heartbeat = NOW() WHERE id = ?",
+                        `UPDATE users 
+                         SET is_online = 1,
+                             last_heartbeat = NOW(),
+                             status        = IF(status_source = 'manual', status, 'available'),
+                             status_source = IF(status_source = 'manual', 'manual', 'system')
+                         WHERE id = ?`,
                         [userId]
                     );
                 } catch (err) {
@@ -66,12 +73,14 @@ export const initSocket = (server) => {
         });
 
         // Heartbeat ACK from client
+        // POLICY: Only refresh last_heartbeat. Never overwrite status_source.
+        // A manually-online user sending heartbeats must NOT be converted to system-managed.
         socket.on("heartbeat_ack", async (userId) => {
             if (userId && !isNaN(userId)) {
                 try {
                     const pool = connectDB();
                     await pool.query(
-                        "UPDATE users SET last_heartbeat = NOW(), status_source = 'system' WHERE id = ?", 
+                        "UPDATE users SET last_heartbeat = NOW() WHERE id = ?",
                         [userId]
                     );
                 } catch (err) { /* silent fail */ }
@@ -89,12 +98,17 @@ export const initSocket = (server) => {
                 
                 if (remainingSockets.length === 0) {
                     logger.info(`👤 User ${userId} is now idle (no active sockets).`);
-                    // We'll let the background heartbeat check handle the "Offline" transition 
-                    // if they don't reconnect within the timeout.
-                    // For legacy support, we update is_online = 0
+                    // POLICY: Only mark offline if presence was system-managed.
+                    // If the user manually toggled online, a socket disconnect must NOT override it.
+                    // The background worker handles stale system-presence cleanup independently.
                     try {
                         const pool = connectDB();
-                        await pool.query("UPDATE users SET is_online = 0 WHERE id = ?", [userId]);
+                        await pool.query(
+                            `UPDATE users 
+                             SET is_online = 0, status = 'offline'
+                             WHERE id = ? AND status_source = 'system'`,
+                            [userId]
+                        );
                     } catch (err) { }
                 }
             }
@@ -102,27 +116,24 @@ export const initSocket = (server) => {
     });
 
     // Background presence worker: Detect ghost agents
+    // POLICY:
+    //   status_source = 'system'  → Auto-set by socket connect/disconnect.
+    //                               Reset to offline if no heartbeat for 90 seconds.
+    //   status_source = 'manual'  → Explicitly toggled by the user via the UI.
+    //                               NEVER auto-reset. Stays online until the user
+    //                               manually toggles off, or reconnects via socket
+    //                               (which overwrites it with status_source='system').
     setInterval(async () => {
         try {
             const pool = connectDB();
-            // Mark agents as Offline (System) if they haven't sent a heartbeat in 90s
-            // 1. Clean up stale SYSTEM presence (90 seconds)
+            // Only clean up stale SYSTEM-sourced presence (socket-driven).
+            // Manual presence is intentionally sticky and is NOT touched here.
             await pool.query(
                 `UPDATE users 
                  SET is_online = 0, status = 'offline', status_source = 'system' 
                  WHERE is_online = 1 
                    AND status_source = 'system'
                    AND (last_heartbeat < (NOW() - INTERVAL 90 SECOND) OR last_heartbeat IS NULL)
-                   AND role != 'superadmin'`
-            );
-
-            // 2. Safety Valve: Clean up stale MANUAL presence (10 minutes)
-            await pool.query(
-                `UPDATE users 
-                 SET is_online = 0, status = 'offline', status_source = 'system' 
-                 WHERE is_online = 1 
-                   AND status_source = 'manual'
-                   AND (last_heartbeat < (NOW() - INTERVAL 10 MINUTE) OR last_heartbeat IS NULL)
                    AND role != 'superadmin'`
             );
         } catch (err) {
