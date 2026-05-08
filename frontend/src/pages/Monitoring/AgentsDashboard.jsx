@@ -82,6 +82,7 @@ export default function AgentsDashboard() {
                             <thead>
                                 <tr>
                                     <th>Agent Name</th>
+                                    <th>Role</th>
                                     <th>Current Status</th>
                                     <th>Last Activity</th>
                                     <th>Actions</th>
@@ -97,6 +98,44 @@ export default function AgentsDashboard() {
                                                 }} />
                                                 <div style={{ fontWeight: 700 }}>{a.name}</div>
                                             </div>
+                                        </td>
+                                        <td>
+                                            <span style={{ 
+                                                padding: '4px 10px', 
+                                                borderRadius: 6, 
+                                                fontSize: 10, 
+                                                fontWeight: 700, 
+                                                textTransform: 'uppercase',
+                                                background: (() => {
+                                                    switch(a.role) {
+                                                        case 'superadmin': return 'var(--purple-bg)';
+                                                        case 'gm': return 'var(--danger-bg)';
+                                                        case 'manager': return 'rgba(249, 115, 22, 0.1)';
+                                                        case 'tl': return 'rgba(234, 179, 8, 0.12)';
+                                                        default: return 'var(--accent-light)';
+                                                    }
+                                                })(),
+                                                color: (() => {
+                                                    switch(a.role) {
+                                                        case 'superadmin': return 'var(--purple)';
+                                                        case 'gm': return 'var(--danger)';
+                                                        case 'manager': return '#f97316';
+                                                        case 'tl': return 'var(--p3)';
+                                                        default: return 'var(--accent)';
+                                                    }
+                                                })(),
+                                                border: `1px solid ${(() => {
+                                                    switch(a.role) {
+                                                        case 'superadmin': return 'var(--purple)';
+                                                        case 'gm': return 'var(--danger)';
+                                                        case 'manager': return '#f97316';
+                                                        case 'tl': return 'var(--p3)';
+                                                        default: return 'var(--accent)';
+                                                    }
+                                                })()}30`
+                                            }}>
+                                                {a.role || 'AGENT'}
+                                            </span>
                                         </td>
                                         <td>
                                             <span style={{ 

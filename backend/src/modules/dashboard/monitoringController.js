@@ -40,13 +40,43 @@ export const getSnapshot = async (req, res) => {
              GROUP BY q.id, q.name`
         );
 
-        // 3. Agent Presence
-        const [agents] = await pool.query(
-            `SELECT id, name, status, is_online, last_heartbeat
-             FROM users 
-             WHERE role IN ('agent', 'tl')
-             ORDER BY is_online DESC, name ASC`
-        );
+        // 3. Agent Presence (RBAC Filtered)
+        let agentsQuery;
+        let agentsParams = [];
+
+        if (role === 'superadmin') {
+            // Superadmin sees all operational roles
+            agentsQuery = `
+                SELECT id, name, status, role, is_online, last_heartbeat
+                FROM users 
+                WHERE role != 'superadmin' OR id = ?
+                ORDER BY FIELD(role, 'gm', 'manager', 'tl', 'agent'), is_online DESC, name ASC`;
+            agentsParams = [req.user.userId];
+        } else if (role === 'gm' || role === 'manager' || role === 'tl') {
+            // GMs and Managers see their recursive "team" hierarchy
+            agentsQuery = `
+                WITH RECURSIVE subordinates AS (
+                    SELECT id, name, role, status, is_online, last_heartbeat, reporting_to
+                    FROM users
+                    WHERE reporting_to = ?
+                    
+                    UNION ALL
+                    
+                    SELECT u.id, u.name, u.role, u.status, u.is_online, u.last_heartbeat, u.reporting_to
+                    FROM users u
+                    INNER JOIN subordinates s ON s.id = u.reporting_to
+                )
+                SELECT id, name, status, role, is_online, last_heartbeat
+                FROM subordinates
+                ORDER BY FIELD(role, 'manager', 'tl', 'agent'), is_online DESC, name ASC`;
+            agentsParams = [req.user.userId];
+        } else {
+            // Agents/others see only themselves or minimal info (fallback)
+            agentsQuery = `SELECT id, name, status, role, is_online, last_heartbeat FROM users WHERE id = ?`;
+            agentsParams = [req.user.userId];
+        }
+
+        const [agents] = await pool.query(agentsQuery, agentsParams);
 
         // 4. Kanban Snapshot (Enriched for Mega-Filters)
         const [kanban] = await pool.query(
@@ -137,7 +167,7 @@ export const getQueueDetail = async (req, res) => {
 
         // 1. Agents in this queue
         const [agents] = await pool.query(
-            `SELECT u.id, u.name, u.status, u.is_online
+            `SELECT u.id, u.name, u.status, u.role, u.is_online
              FROM queue_agents qa
              JOIN users u ON qa.user_id = u.id
              WHERE qa.queue_id = ?`,
@@ -174,12 +204,37 @@ export const getAgentDetail = async (req, res) => {
     try {
         const pool = connectDB();
         const { id } = req.params;
+        const requesterId = req.user.userId;
+        const requesterRole = req.user.role;
 
         // 1. Agent basic info + current status
-        const [agent] = await pool.query(
-            `SELECT id, name, status, is_online, last_heartbeat FROM users WHERE id = ?`,
+        const [agentRows] = await pool.query(
+            `SELECT id, name, role, status, is_online, last_heartbeat, reporting_to FROM users WHERE id = ?`,
             [id]
         );
+
+        if (!agentRows.length) return res.status(404).json({ success: false, message: "Agent not found" });
+        const targetAgent = agentRows[0];
+
+        // 2. RBAC Enforcement
+        if (requesterRole !== 'superadmin') {
+            // Check if the target is in the requester's hierarchy
+            const [hierarchy] = await pool.query(
+                `WITH RECURSIVE subordinates AS (
+                    SELECT id FROM users WHERE reporting_to = ?
+                    UNION ALL
+                    SELECT u.id FROM users u INNER JOIN subordinates s ON s.id = u.reporting_to
+                )
+                SELECT 1 FROM subordinates WHERE id = ? LIMIT 1`,
+                [requesterId, id]
+            );
+
+            if (!hierarchy.length && requesterId != id) {
+                return res.status(403).json({ success: false, message: "Access denied: User is not in your team hierarchy." });
+            }
+        }
+
+        const agent = targetAgent;
 
         // 2. Current active ticket
         const [tickets] = await pool.query(
@@ -201,7 +256,7 @@ export const getAgentDetail = async (req, res) => {
 
         return res.json({ 
             success: true, 
-            agent: agent[0], 
+            agent: agent, 
             activeTicket: tickets[0] || null,
             stats: stats[0] 
         });
@@ -221,7 +276,7 @@ export const getShiftDetail = async (req, res) => {
         const { id } = req.params;
 
         const [members] = await pool.query(
-            `SELECT u.id, u.name, u.status, u.is_online,
+            `SELECT u.id, u.name, u.status, u.role, u.is_online,
                 (SELECT COUNT(*) FROM tickets t WHERE t.assigned_to = u.id AND t.status IN ('open','in_progress')) as active_tickets
              FROM shift_members sm
              JOIN users u ON sm.user_id = u.id
