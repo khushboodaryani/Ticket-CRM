@@ -770,7 +770,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
 
     const rawSubject = (parsed.subject || 'No Subject').trim();
     const cleanSubject = rawSubject
-        .replace(/^(re|fwd?|reply):\s*/i, '')
+        .replace(/^(?:(?:re|fwd?|reply):\s*)+/gi, '')
         .replace(/\[?(?:TKT-\d{8}-\d{4}|[A-Z]-\d{5})\]?\s*/gi, '')
         .trim() || 'General Inquiry';
 
