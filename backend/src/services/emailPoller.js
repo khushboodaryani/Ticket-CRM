@@ -1052,12 +1052,15 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
                 `SELECT id, ticket_number
                  FROM tickets
                  WHERE customer_id = ?
-                   AND BINARY subject = BINARY ?
+                   AND (
+                       BINARY subject = BINARY ?
+                       OR BINARY category = BINARY ?
+                   )
                    AND status NOT IN ('closed', 'resolved')
                    AND created_at > (NOW() - INTERVAL 24 HOUR)
                  ORDER BY created_at DESC
                  LIMIT 2`,
-                [domainResolution.customerId, rawSubject.slice(0, 500)]
+                [domainResolution.customerId, rawSubject.slice(0, 500), cleanSubject.slice(0, 250)]
             );
 
             if (logicalTickets.length === 1) {
