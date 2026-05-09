@@ -1031,10 +1031,57 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
             }
         }
 
-        // --- STEP 3: No fuzzy participant fallback ---
-        // Privacy guard: never merge unrelated emails just because the sender is
-        // present on another open ticket. Threading is limited to RFC headers
-        // and explicit ticket-number subjects above.
+        let domainResolution = null;
+
+        if (!matchedTicketId) {
+            domainResolution = await resolveCustomerByDomain(conn, pool, senderEmail, senderName, rawSubject, bodyText, messageId, inReplyTo, references, logId);
+
+            if (!domainResolution) {
+                // Unknown domain — email has been held for superadmin approval. Commit and exit.
+                await conn.commit();
+                logger.info(`[EmailPoller] ⏸️ Email held for domain approval: ${senderEmail} (messageId=${messageId})`);
+                return { status: 'held_for_approval', messageId };
+            }
+        }
+
+        // --- STEP 3: Logical fallback (same customer + exact subject, recent active ticket) ---
+        // Last resort for systems that send related alerts without RFC reply headers or ticket IDs.
+        // Only append when exactly one active ticket matches in the last 24 hours.
+        if (!matchedTicketId && domainResolution?.customerId) {
+            const [logicalTickets] = await conn.query(
+                `SELECT id, ticket_number
+                 FROM tickets
+                 WHERE customer_id = ?
+                   AND BINARY subject = BINARY ?
+                   AND status NOT IN ('closed', 'resolved')
+                   AND created_at > (NOW() - INTERVAL 24 HOUR)
+                 ORDER BY created_at DESC
+                 LIMIT 2`,
+                [domainResolution.customerId, rawSubject.slice(0, 500)]
+            );
+
+            if (logicalTickets.length === 1) {
+                const [logicalConversations] = await conn.query(
+                    `SELECT id
+                     FROM conversations
+                     WHERE ticket_id = ?
+                     ORDER BY CASE WHEN source_channel = 'email' THEN 0 ELSE 1 END, id ASC
+                     LIMIT 1`,
+                    [logicalTickets[0].id]
+                );
+
+                if (logicalConversations.length) {
+                    matchedTicketId = logicalTickets[0].id;
+                    matchedConvId = logicalConversations[0].id;
+                    matchedNum = logicalTickets[0].ticket_number;
+                    matchReason = 'logical_customer_subject_24h';
+                    logger.info(`[EmailPoller] Logical subject/customer match: ticket=${matchedNum} customer=${domainResolution.customerId} messageId=${messageId}`);
+                }
+            } else if (logicalTickets.length > 1) {
+                logger.warn(`[EmailPoller] Logical fallback skipped: multiple active tickets matched customer=${domainResolution.customerId} subject="${rawSubject.slice(0, 120)}"`);
+            }
+        }
+
         if (!matchedTicketId) {
             logger.info(`[EmailPoller] No header/ticket-number match for ${messageId}; creating new ticket.`);
         }
@@ -1049,16 +1096,7 @@ export async function processOneEmail(pool, msg, connection, defaultProjectId, d
 
         // Create New Ticket — Domain-Based Customer Resolution
         logger.info(`[EmailPoller] Match result: reason=new_ticket messageId=${messageId} inReplyTo=${inReplyTo || ''}`);
-        logger.info(`[EmailPoller] No thread match for ${messageId}. Resolving customer by domain for sender=${senderEmail}, subject="${rawSubject.slice(0, 120)}"`);
-
-        const domainResolution = await resolveCustomerByDomain(conn, pool, senderEmail, senderName, rawSubject, bodyText, messageId, inReplyTo, references, logId);
-
-        if (!domainResolution) {
-            // Unknown domain — email has been held for superadmin approval. Commit and exit.
-            await conn.commit();
-            logger.info(`[EmailPoller] ⏸️ Email held for domain approval: ${senderEmail} (messageId=${messageId})`);
-            return { status: 'held_for_approval', messageId };
-        }
+        logger.info(`[EmailPoller] No thread match for ${messageId}. Creating new ticket for sender=${senderEmail}, subject="${rawSubject.slice(0, 120)}"`);
 
         const { customerId, customerName: resolvedCustomerName, matchType: domainMatchType, queueId: resolvedQueueId } = domainResolution;
         let { projectId: resolvedProjectId } = domainResolution;
