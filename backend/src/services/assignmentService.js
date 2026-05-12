@@ -54,24 +54,27 @@ export const getShiftAssignee = async (queueId = null, priority = 'P3') => {
             JOIN shift_members sm ON sm.user_id = u.id
         `;
         
-        const params = [activeShiftIds];
+        const shiftPlaceholders = activeShiftIds.map(() => '?').join(',');
+        const params = [...activeShiftIds];
         
         if (queueId) {
             query += ` JOIN queue_agents qa ON qa.user_id = u.id `;
         }
         
         query += ` 
-            WHERE sm.shift_id IN (?) 
+            WHERE sm.shift_id IN (${shiftPlaceholders}) 
             AND u.role IN ('agent', 'tl') 
             AND u.is_active = 1 
             AND u.is_online = 1
-            AND u.last_heartbeat > DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+            AND u.last_heartbeat > DATE_SUB(NOW(), INTERVAL 30 MINUTE)
         `;
         
         if (queueId) {
             query += ` AND qa.queue_id = ? `;
             params.push(queueId);
         }
+
+        query += ` GROUP BY u.id, u.name, u.is_online `;
 
         const [agents] = await pool.query(query, params);
 
