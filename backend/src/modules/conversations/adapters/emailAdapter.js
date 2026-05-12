@@ -15,6 +15,13 @@ const ATTACHMENT_DIR = path.resolve(__dirname, '../../../../public/attachments')
 const SENDER_EMAIL = (process.env.SMTP_USER || process.env.EMAIL_USER || '').trim();
 const REPLY_TO_EMAIL = (process.env.IMAP_USER || SENDER_EMAIL).trim();
 
+const escapeHtml = (value = '') => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 /**
  * Build a full chronological conversation trail for inclusion in outgoing emails.
  * Merges conversation messages + key activity events (status changes, assignments)
@@ -124,6 +131,82 @@ export const getConversationTrailHtml = async (pool, ticketId) => {
         logger.error(`[EmailAdapter] Trail Error: ${e.message}`);
         return '';
     }
+};
+
+export const sendCCNotificationEmail = async (ticketId, convId, ccEmail, rootMessageId = null) => {
+    const pool = connectDB();
+
+    const [rows] = await pool.query(
+        `SELECT t.ticket_number, t.subject, t.category, t.priority, t.status, t.created_at,
+                c.name as customer_name
+         FROM tickets t
+         LEFT JOIN customers c ON c.id = t.customer_id
+         WHERE t.id = ?
+         LIMIT 1`,
+        [ticketId]
+    );
+
+    if (!rows.length) {
+        throw new Error(`Ticket ${ticketId} not found`);
+    }
+
+    const ticket = rows[0];
+    const domain = SENDER_EMAIL?.split('@')[1] || 'multycomm.com';
+    const newMessageId = `<cc-notify-${ticketId}-${Date.now()}-${Math.random().toString(36).slice(2)}@${domain}>`;
+    const subjectLine = ticket.subject || ticket.category || ticket.ticket_number;
+    const headers = {
+        'Message-ID': newMessageId,
+        'Auto-Submitted': 'auto-generated',
+        'X-Auto-Response-Suppress': 'All',
+        'X-Source': 'internal',
+        'X-Ticket-CRM-Origin': 'cc-notification'
+    };
+
+    if (rootMessageId) {
+        headers['In-Reply-To'] = rootMessageId;
+        headers['References'] = rootMessageId;
+    }
+
+    const trailHtml = await getConversationTrailHtml(pool, ticketId);
+    const openedAt = ticket.created_at
+        ? new Date(ticket.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true })
+        : '-';
+
+    const mailOptions = {
+        from: `"Support Team" <${SENDER_EMAIL}>`,
+        replyTo: REPLY_TO_EMAIL || undefined,
+        to: ccEmail,
+        subject: rootMessageId
+            ? `Re: [${ticket.ticket_number}] ${subjectLine}`
+            : `[${ticket.ticket_number}] ${subjectLine}`,
+        headers,
+        html: `
+            <div style="font-family: Arial, sans-serif; max-width: 760px; margin: 0 auto; padding: 20px; color: #1f2937;">
+                <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">
+                    <div style="background:#f8fafc; padding:16px 20px; border-bottom:1px solid #e5e7eb;">
+                        <h2 style="margin:0; font-size:18px; color:#111827;">You've been added as CC on Ticket #${escapeHtml(ticket.ticket_number)}</h2>
+                    </div>
+                    <div style="padding:20px; font-size:14px; line-height:1.6;">
+                        <p style="margin-top:0;">You will receive all future updates. Reply directly to this email to respond.</p>
+                        <table cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse;">
+                            <tr><td style="padding:6px 0; color:#64748b;">Subject</td><td style="padding:6px 0; font-weight:600;">${escapeHtml(subjectLine)}</td></tr>
+                            <tr><td style="padding:6px 0; color:#64748b;">Customer</td><td style="padding:6px 0; font-weight:600;">${escapeHtml(ticket.customer_name || '-')}</td></tr>
+                            <tr><td style="padding:6px 0; color:#64748b;">Priority</td><td style="padding:6px 0; font-weight:600;">${escapeHtml(ticket.priority || '-')}</td></tr>
+                            <tr><td style="padding:6px 0; color:#64748b;">Status</td><td style="padding:6px 0; font-weight:600;">${escapeHtml(ticket.status || '-')}</td></tr>
+                            <tr><td style="padding:6px 0; color:#64748b;">Opened</td><td style="padding:6px 0; font-weight:600;">${escapeHtml(openedAt)}</td></tr>
+                        </table>
+                        ${trailHtml}
+                    </div>
+                </div>
+            </div>
+        `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    await recordSystemSentMessage(pool, info?.messageId || newMessageId, ticketId);
+    logger.info(`[EmailAdapter] CC notification delivered ticket=${ticket.ticket_number} conv=${convId} to=${ccEmail} messageId=${newMessageId}`);
+
+    return { success: true, messageId: info?.messageId || newMessageId };
 };
 
 /**

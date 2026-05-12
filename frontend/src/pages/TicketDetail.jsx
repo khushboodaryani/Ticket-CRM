@@ -110,6 +110,10 @@ export default function TicketDetail() {
     const [assignUsers, setAssignUsers] = useState([])
     const [queues, setQueues] = useState([])
     const [priorities, setPriorities] = useState([])
+    const [ccList, setCcList] = useState([])
+    const [ccInput, setCcInput] = useState('')
+    const [addingCc, setAddingCc] = useState(false)
+    const [ccLoading, setCcLoading] = useState(false)
 
     // Conversation
     const [messageBody, setMessageBody] = useState('')
@@ -129,6 +133,15 @@ export default function TicketDetail() {
     const [showPriModal, setShowPriModal] = useState(false)
     const [newPriority, setNewPriority] = useState('')
     const [priReason, setPriReason] = useState('')
+
+    const loadParticipants = useCallback(async () => {
+        try {
+            const { data } = await api.get(`/tickets/${id}/participants`)
+            setCcList(data.participants || [])
+        } catch (err) {
+            console.error('[TicketDetail] Failed to load participants:', err)
+        }
+    }, [id])
 
     const loadData = useCallback(async () => {
         try {
@@ -151,12 +164,13 @@ export default function TicketDetail() {
             setAssignUsers(userRes.data.users)
             setQueues(queueRes.data.queues)
             setPriorities(prioRes.data.priorities || [])
+            loadParticipants()
             setLoading(false)
         } catch (err) {
             console.error(err)
             setLoading(false)
         }
-    }, [id])
+    }, [id, loadParticipants])
 
     useEffect(() => { loadData() }, [loadData])
 
@@ -262,6 +276,28 @@ export default function TicketDetail() {
             setShowEscModal(false)
             loadData()
         } catch { toast.error('Escalation failed') }
+    }
+
+    const handleAddCc = async (e) => {
+        e.preventDefault()
+        const email = ccInput.trim()
+        if (!email) return
+
+        setCcLoading(true)
+        try {
+            const { data } = await api.post(`/tickets/${id}/participants`, { emails: [email] })
+            if (data.added?.length) {
+                toast.success('CC added. Notification email sent.')
+            } else {
+                toast.success('CC already exists.')
+            }
+            setCcInput('')
+            setAddingCc(false)
+            loadData()
+        } catch (err) {
+            toast.error(err.response?.data?.message || 'Failed to add CC')
+        }
+        setCcLoading(false)
     }
 
     if (loading) return <><Topbar title="Ticket Detail" /><div className="loader-center"><div className="spinner spinner-lg" /></div></>
@@ -727,6 +763,58 @@ export default function TicketDetail() {
                                     {queues.map(q => <option key={q.id} value={q.id}>{q.name}</option>)}
                                 </select>
                             </div>
+                            <div style={{ padding: '12px', borderRadius: 8, background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                                    <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: 0.4 }}>CC Recipients</span>
+                                    {!addingCc && (
+                                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAddingCc(true)}>
+                                            + Add CC
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: addingCc ? 10 : 0 }}>
+                                    {ccList.length ? ccList.map(participant => (
+                                        <span
+                                            key={participant.email}
+                                            className="badge"
+                                            title={participant.notified_at ? `Notified ${new Date(participant.notified_at).toLocaleString('en-IN')}` : 'Notification pending'}
+                                            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', fontWeight: 600 }}
+                                        >
+                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{participant.email}</span>
+                                            <span aria-hidden="true" style={{ color: 'var(--text-muted)', fontWeight: 800 }}>x</span>
+                                        </span>
+                                    )) : (
+                                        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No CC recipients</span>
+                                    )}
+                                </div>
+
+                                {addingCc && (
+                                    <form onSubmit={handleAddCc} style={{ display: 'flex', gap: 6 }}>
+                                        <input
+                                            className="input"
+                                            type="email"
+                                            placeholder="name@example.com"
+                                            value={ccInput}
+                                            onChange={e => setCcInput(e.target.value)}
+                                            style={{ fontSize: 12, minWidth: 0 }}
+                                            autoFocus
+                                        />
+                                        <button className="btn btn-primary btn-sm" type="submit" disabled={ccLoading || !ccInput.trim()}>
+                                            {ccLoading ? 'Adding...' : 'Add'}
+                                        </button>
+                                        <button
+                                            className="btn btn-secondary btn-sm"
+                                            type="button"
+                                            disabled={ccLoading}
+                                            onClick={() => { setAddingCc(false); setCcInput('') }}
+                                        >
+                                            Cancel
+                                        </button>
+                                    </form>
+                                )}
+                            </div>
+
                             <button className="btn btn-primary" onClick={handleUpdate} disabled={updating} style={{ width: '100%', justifyContent: 'center' }}>
                                 {updating ? <><span className="spinner" style={{ width: 13, height: 13 }} /> Saving…</> : '✓ Save Changes'}
                             </button>

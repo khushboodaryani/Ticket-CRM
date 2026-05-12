@@ -2,6 +2,7 @@
 import connectDB from "../../db/index.js";
 import moment from "moment-timezone";
 import { sendTicketNotification, sendTicketStatusNotification, sendTicketAssignedNotification } from "../notifications/emailService.js";
+import { sendCCNotificationEmail } from "../conversations/adapters/emailAdapter.js";
 import { createNotification } from "../notifications/notificationController.js";
 import { workflowEvents } from "../workflows/workflowEngine.js";
 import { logger } from "../../logger.js";
@@ -12,12 +13,15 @@ config();
 
 const TZ = process.env.TIMEZONE || "Asia/Kolkata";
 const buildETR = () => moment().tz(TZ).add(2, "hours").format("YYYY-MM-DD HH:mm:ss");
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ESCALATION_ROLE_BY_LEVEL = {
     1: "agent",
     2: "tl",
     3: "manager",
     4: "gm",
 };
+
+const normalizeEmail = (email = "") => String(email).trim().toLowerCase();
 
 const fetchTicketAssignmentEmailContext = async (pool, ticketId) => {
     const [rows] = await pool.query(
@@ -238,6 +242,143 @@ export const getTicketById = async (req, res) => {
     } catch (err) {
         console.error("getTicketById:", err);
         return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// GET /api/tickets/:id/participants
+export const getParticipants = async (req, res) => {
+    try {
+        const pool = connectDB();
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+
+        const [ticketRows] = await pool.query(
+            `SELECT t.id FROM tickets t WHERE t.id = ? AND (${roleWhere}) LIMIT 1`,
+            [req.params.id, ...roleParams]
+        );
+        if (!ticketRows.length) {
+            return res.status(403).json({ success: false, message: "Not found or access denied." });
+        }
+
+        const [participants] = await pool.query(
+            `SELECT cp.email, cp.added_manually, cp.notified_at
+             FROM conversation_participants cp
+             JOIN conversations c ON c.id = cp.conversation_id
+             WHERE c.ticket_id = ? AND cp.type = 'cc'
+             ORDER BY cp.created_at ASC, cp.email ASC`,
+            [req.params.id]
+        );
+
+        return res.json({ success: true, participants });
+    } catch (err) {
+        console.error("getParticipants:", err);
+        return res.status(500).json({ success: false, message: "Server error." });
+    }
+};
+
+// POST /api/tickets/:id/participants
+export const addParticipants = async (req, res) => {
+    const requestedEmails = Array.isArray(req.body?.emails) ? req.body.emails : [];
+    const emails = [...new Set(requestedEmails.map(normalizeEmail).filter(Boolean))];
+
+    if (!emails.length) {
+        return res.status(400).json({ success: false, message: "At least one email is required." });
+    }
+
+    const invalid = emails.find(email => !EMAIL_RE.test(email));
+    if (invalid) {
+        return res.status(400).json({ success: false, message: `Invalid email address: ${invalid}` });
+    }
+
+    try {
+        const pool = connectDB();
+        const { where: roleWhere, params: roleParams } = buildRoleFilter(req.user);
+
+        const [ticketRows] = await pool.query(
+            `SELECT t.id FROM tickets t WHERE t.id = ? AND (${roleWhere}) LIMIT 1`,
+            [req.params.id, ...roleParams]
+        );
+        if (!ticketRows.length) {
+            return res.status(403).json({ success: false, message: "Not found or access denied." });
+        }
+
+        let [conversationRows] = await pool.query(
+            `SELECT id, root_message_id
+             FROM conversations
+             WHERE ticket_id = ? AND source_channel = 'email'
+             ORDER BY id ASC
+             LIMIT 1`,
+            [req.params.id]
+        );
+
+        if (!conversationRows.length) {
+            const [created] = await pool.query(
+                `INSERT INTO conversations (ticket_id, source_channel) VALUES (?, 'email')`,
+                [req.params.id]
+            );
+            conversationRows = [{ id: created.insertId, root_message_id: null }];
+        }
+
+        const conversation = conversationRows[0];
+        const added = [];
+        const skipped = [];
+
+        for (const email of emails) {
+            const [existing] = await pool.query(
+                `SELECT id, type, added_manually, notified_at
+                 FROM conversation_participants
+                 WHERE conversation_id = ? AND email = ?
+                 LIMIT 1`,
+                [conversation.id, email]
+            );
+
+            if (existing.length) {
+                const participant = existing[0];
+                if (participant.type === 'cc' && participant.added_manually && !participant.notified_at) {
+                    await sendCCNotificationEmail(req.params.id, conversation.id, email, conversation.root_message_id);
+                    await pool.query(
+                        `UPDATE conversation_participants
+                         SET notified_at = NOW()
+                         WHERE conversation_id = ? AND email = ?`,
+                        [conversation.id, email]
+                    );
+                }
+                skipped.push(email);
+                continue;
+            }
+
+            await pool.query(
+                `INSERT INTO conversation_participants (conversation_id, email, type, added_manually)
+                 VALUES (?, ?, 'cc', 1)`,
+                [conversation.id, email]
+            );
+
+            await sendCCNotificationEmail(req.params.id, conversation.id, email, conversation.root_message_id);
+
+            await pool.query(
+                `UPDATE conversation_participants
+                 SET notified_at = NOW()
+                 WHERE conversation_id = ? AND email = ?`,
+                [conversation.id, email]
+            );
+
+            added.push(email);
+        }
+
+        if (added.length) {
+            await pool.query(
+                `INSERT INTO ticket_activities (ticket_id, action, performed_by, note) VALUES (?, 'cc_added', ?, ?)`,
+                [
+                    req.params.id,
+                    req.user.userId,
+                    `CC added manually: ${added.join(", ")} by ${req.user.name || req.user.email || "User"}`
+                ]
+            );
+        }
+
+        return res.json({ success: true, added, skipped });
+    } catch (err) {
+        console.error("addParticipants:", err);
+        return res.status(500).json({ success: false, message: err.message || "Server error." });
     }
 };
 

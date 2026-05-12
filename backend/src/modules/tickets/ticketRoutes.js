@@ -7,7 +7,8 @@ import {
     escalateTicket, getSTRQueue,
     importTickets, exportTickets, bulkUpdateTickets,
     assignQueue, changePriority,
-    addTask, getTasks, updateTask, slaHold, pingSocket
+    addTask, getTasks, updateTask, slaHold, pingSocket,
+    addParticipants, getParticipants
 } from "./ticketController.js";
 import conversationRoutes from "../conversations/conversationRoutes.js";
 
@@ -39,6 +40,10 @@ router.put("/:id/priority", requireRole("superadmin", "gm", "manager", "tl"), ch
 router.get("/:id/tasks", getTasks);
 router.post("/:id/tasks", addTask);
 router.put("/:id/tasks/:taskId", updateTask);
+
+// Conversation participants
+router.get("/:id/participants", getParticipants);
+router.post("/:id/participants", addParticipants);
 
 // Conversation thread (nested under ticket routes)
 router.use("/:ticketId", conversationRoutes);
